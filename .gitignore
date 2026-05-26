@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+*.crx
+*.zip
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.local
+
+# env / secrets (never commit API keys)
+.env
+.env.*
+!.env.example
+
+# test / coverage
+coverage/
+.vitest/

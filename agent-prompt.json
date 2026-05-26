@@ -1,0 +1,509 @@
+{
+  "$schema": "antigravity-agent-prompt/v1",
+  "meta": {
+    "role_for_agent": "Act as a senior full-stack engineer (Chrome extension specialist) AND a product designer. Make opinionated decisions where this spec is silent. Default to the simplest implementation that meets the acceptance criteria. Do not add features that are not in the spec. Do not invent monetisation, telemetry, accounts, or backends.",
+    "execution_style": "Build the project end-to-end in one pass. Produce a working, lintable, type-checked, build-able codebase. Run `pnpm install`, `pnpm build`, and `pnpm typecheck` before declaring done. Fix any errors that surface.",
+    "constraint_on_dependencies": "Keep the dependency tree minimal. Justify every runtime dependency in a comment in package.json. Prefer the platform (fetch, Web APIs, Shadow DOM) over libraries."
+  },
+
+  "project": {
+    "working_name": "InlineAI for LinkedIn",
+    "rename_instruction": "Use 'InlineAI' as the working extension name and slug throughout the codebase. The user can rename in one place (package.json + manifest.json + README) later.",
+    "tagline": "Open-source, bring-your-own-key Chrome extension that drafts genuinely personalised LinkedIn comments inline.",
+    "one_liner": "When the user focuses LinkedIn's comment input, a small inline 'Write with AI' button appears next to it. Clicking the button reads the parent post, calls the user's chosen LLM with a LinkedIn-specific skill prompt, and writes a thoughtful, post-specific professional comment directly into the comment box for the user to review, edit, and post.",
+    "license": "MIT",
+    "repo_layout": "Single repository, monorepo not required.",
+    "open_source": true,
+    "philosophy": [
+      "Privacy-first: the user's API key is stored in chrome.storage.local only. No network calls except to the chosen LLM provider.",
+      "BYO key: the user pays the LLM provider directly; the extension never proxies through our infra.",
+      "Quality over quantity: one excellent feature (great LinkedIn comments) beats five mediocre ones.",
+      "The model is the product surface. The LinkedIn skill prompt is the most important file in the repo. Treat prompt engineering as code.",
+      "Respect LinkedIn UX: the inline button must feel native, never intrusive. No popups, no toasts on every action, no notifications."
+    ],
+    "non_goals_v1": [
+      "Auto-posting / automation. The user always reviews before posting.",
+      "Server-side processing. There is no backend.",
+      "Multi-platform (X, Reddit, FB) in v1. Architect cleanly so adding them later is straightforward, but ship LinkedIn only.",
+      "Multiple tones. v1 ships ONE voice: 'LinkedIn professional, but human and specific'. The skill file encodes this.",
+      "Accounts, telemetry, analytics, error reporting.",
+      "Subscriptions, monetisation, premium tiers."
+    ]
+  },
+
+  "target_user_context": {
+    "primary_user": "Knowledge worker / designer / founder / engineer active on LinkedIn who wants to engage thoughtfully but is time-constrained.",
+    "pain_being_solved": "Most existing LinkedIn comment AI tools produce generic, obviously-AI comments ('Great post!', 'Couldn't agree more!') that hurt the user's brand. The user wants personalised, post-specific comments that sound like the user wrote them.",
+    "competitive_landscape": "Closed-source freemium tools dominate (CommentWala, Olly, WiseReply, Sparklin, CommentsPro). Our differentiation is: truly open source, BYO key (zero ongoing cost), privacy-first (no server), and comment quality (driven by the LinkedIn skill file)."
+  },
+
+  "tech_stack": {
+    "build_tool": {
+      "choice": "Vite 5 + @crxjs/vite-plugin (latest stable)",
+      "why": "CRXJS is the modern standard for Chrome extension dev: real HMR for content scripts, automatic manifest.json handling, TS support out of the box, no webpack ceremony."
+    },
+    "language": {
+      "choice": "TypeScript with strict mode enabled (strict: true, noUncheckedIndexedAccess: true)",
+      "why": "Chrome extension APIs have rich types; strict TS catches LinkedIn DOM null-safety bugs before they ship."
+    },
+    "ui_framework": {
+      "popup_and_options": "React 18 + TypeScript",
+      "content_script": "Vanilla TypeScript with Shadow DOM (NO React in the content script)",
+      "why": "React in the content script bloats the bundle, slows LinkedIn, and risks DOM conflicts with LinkedIn's own React tree. Vanilla TS with a small custom render helper inside a Shadow DOM is faster, smaller, and isolated."
+    },
+    "styling": {
+      "popup_and_options": "Tailwind CSS v3 (latest stable in v3 line) + a small handcrafted design system (no shadcn/ui needed for this scope; build 4 primitives ourselves: Button, Input, Select, Toggle)",
+      "content_script": "Plain CSS scoped inside Shadow DOM. No Tailwind in content script — it leaks utility classes and inflates payload.",
+      "why": "Tailwind is great for the settings UI which is small and contained. Shadow DOM CSS isolation is the correct mechanism for injecting UI into a host page we don't control."
+    },
+    "validation": {
+      "choice": "Zod",
+      "why": "Validate stored settings on read, validate LLM responses, validate provider configs. One small dependency, big safety win."
+    },
+    "ai_clients": {
+      "choice": "Native fetch with a thin provider abstraction. NO vendor SDKs (no openai npm, no @anthropic-ai/sdk, no @google/generative-ai).",
+      "why": "Vendor SDKs each add 40-200KB. fetch + a 200-line provider abstraction supports all of OpenAI, Anthropic, Gemini, OpenRouter, Groq, and Ollama. Saves 500KB+ of bundle weight in a tab the user opens dozens of times a day."
+    },
+    "storage": {
+      "choice": "chrome.storage.local exclusively",
+      "why": "Per user spec: privacy-first, no sync. API keys never leave the device.",
+      "key_format": "All keys namespaced under `inlineai:` (e.g. `inlineai:settings`, `inlineai:persona`, `inlineai:provider`)."
+    },
+    "icons": {
+      "popup_and_options": "lucide-react",
+      "content_script": "Inline SVG strings (don't bundle a whole icon lib for one sparkle icon)"
+    },
+    "package_manager": {
+      "choice": "pnpm",
+      "why": "Faster, less disk, deterministic. lockfile committed."
+    },
+    "linting_and_formatting": {
+      "choice": "Biome (single tool replacing ESLint + Prettier)",
+      "why": "10-100x faster than ESLint+Prettier, one config file, fewer dev deps. Standard in 2025+ TS projects."
+    },
+    "testing": {
+      "unit": "Vitest (Vite-native, fast, same config as the build)",
+      "e2e": "Skipped in v1. Add Playwright with Chromium-extension support post-launch.",
+      "what_to_test": [
+        "The provider abstraction: each provider's request/response shape with mocked fetch.",
+        "Storage helpers: round-trip serialise/parse of settings.",
+        "Post extractor: given a snapshot of LinkedIn DOM, returns expected post text and author."
+      ]
+    }
+  },
+
+  "ai_provider_support": {
+    "providers_v1": [
+      {
+        "id": "openai",
+        "display_name": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "supported_models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
+        "auth": "Bearer header",
+        "request_shape": "OpenAI Chat Completions /chat/completions"
+      },
+      {
+        "id": "anthropic",
+        "display_name": "Anthropic (Claude)",
+        "base_url": "https://api.anthropic.com/v1",
+        "default_model": "claude-haiku-4-5-20251001",
+        "supported_models": [
+          "claude-opus-4-7",
+          "claude-opus-4-6",
+          "claude-sonnet-4-6",
+          "claude-haiku-4-5-20251001"
+        ],
+        "auth": "x-api-key header + anthropic-version: 2023-06-01",
+        "request_shape": "Messages API /messages",
+        "cors_note": "Anthropic API supports a special header `anthropic-dangerous-direct-browser-access: true` for browser usage; include it. The extension's host_permissions in manifest cover this."
+      },
+      {
+        "id": "google",
+        "display_name": "Google Gemini",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "default_model": "gemini-2.0-flash",
+        "supported_models": ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+        "auth": "?key= query param",
+        "request_shape": "generateContent endpoint"
+      },
+      {
+        "id": "openrouter",
+        "display_name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "default_model": "openai/gpt-4o-mini",
+        "supported_models": "Free-text model id field (OpenRouter has hundreds; do not hardcode a dropdown — allow free text)",
+        "auth": "Bearer header",
+        "request_shape": "OpenAI-compatible /chat/completions",
+        "extra_headers": "Set HTTP-Referer to https://github.com/<placeholder>/inlineai and X-Title to InlineAI for LinkedIn for OpenRouter attribution."
+      },
+      {
+        "id": "groq",
+        "display_name": "Groq (fastest, free tier)",
+        "base_url": "https://api.groq.com/openai/v1",
+        "default_model": "llama-3.3-70b-versatile",
+        "supported_models": [
+          "llama-3.3-70b-versatile",
+          "llama-3.1-8b-instant",
+          "mixtral-8x7b-32768"
+        ],
+        "auth": "Bearer header",
+        "request_shape": "OpenAI-compatible /chat/completions"
+      },
+      {
+        "id": "ollama",
+        "display_name": "Local (Ollama)",
+        "base_url": "http://localhost:11434/v1",
+        "default_model": "llama3.1:8b",
+        "supported_models": "Free-text model id field",
+        "auth": "None",
+        "request_shape": "OpenAI-compatible /chat/completions",
+        "note_for_user": "Requires user to run Ollama locally. Show a help link in settings."
+      }
+    ],
+    "provider_abstraction": {
+      "interface": "A single TS interface `LLMProvider` with one method: `generateComment(params: { systemPrompt: string; userPrompt: string; signal: AbortSignal }): Promise<string>`. Each provider is a class implementing this interface.",
+      "factory": "A `getProvider(settings)` function returns the right implementation based on stored `providerId`.",
+      "error_handling": "Each provider maps 401/403 → 'Invalid API key. Open InlineAI settings to update it.', 429 → 'Rate limited by provider. Try again in a few seconds.', 5xx → 'Provider is having issues. Try again.', network errors → 'No internet or provider unreachable.'",
+      "abort": "All requests must accept an AbortSignal so a second click on the button cancels the in-flight request."
+    }
+  },
+
+  "feature_spec": {
+    "F1_inline_button": {
+      "trigger": "When the user clicks/focuses a LinkedIn comment input (a contenteditable with role='textbox' inside a post container), an inline 'Write with AI' button appears in the comment toolbar area to the right of the input.",
+      "appearance": "Small pill button. Sparkle icon (✦ or custom SVG) + text 'Write with AI'. Matches LinkedIn's button visual weight (subtle, not screaming). On hover: slight lift + accent color shift.",
+      "states": [
+        "default: 'Write with AI' + sparkle icon",
+        "loading: spinner + 'Writing…' + clicking again aborts",
+        "error: brief shake animation + tooltip with error message (auto-dismisses after 4s)",
+        "success: button collapses back to default within 300ms"
+      ],
+      "behavior": "On click: read post → call LLM → stream/insert result into the contenteditable. Do NOT auto-submit. The user reviews and clicks LinkedIn's own Post button.",
+      "non_focus_handling": "If the comment input loses focus, keep the button visible until the user clicks outside the post entirely. Re-focusing the input does not duplicate the button."
+    },
+    "F2_post_extraction": {
+      "what_to_extract": [
+        "Post author display name",
+        "Post author headline (job title / one-liner) if visible",
+        "Post body text (expand 'see more' if collapsed, by clicking the see-more button programmatically before extracting)",
+        "Whether the post is an article, image post, video, document carousel, repost",
+        "Hashtags found in the post",
+        "Post type classification (heuristic): 'achievement', 'opinion', 'question', 'story', 'news', 'product_launch', 'hiring', 'personal', 'tutorial', 'meme', 'unknown'"
+      ],
+      "extraction_strategy": "Use resilient selectors. NEVER rely on LinkedIn's hashed CSS class names. Use: data-* attributes, aria-labels, semantic structure (article, h2, button[aria-label='Like']), and DOM traversal from the comment box upward to the nearest article/feed-item container.",
+      "see_more_expansion": "If the post body has a 'see more' button (button containing 'see more' text or aria-label), programmatically click it and wait 100ms before reading text.",
+      "fallback": "If extraction fails entirely, surface an inline error message under the button ('Couldn't read the post — please report this'). Never call the LLM with an empty post."
+    },
+    "F3_llm_call": {
+      "system_prompt_source": "Loaded from /src/skills/linkedin-skill.md at build time. The skill file is bundled as a string import.",
+      "user_prompt_template": "Constructed at runtime, includes: extracted post data (author, headline, body, type), the user's persona (from settings), and a clear instruction to output only the comment text with no preamble.",
+      "persona_fields": [
+        "name (optional)",
+        "role (e.g. 'Product Designer')",
+        "expertise (free text, ~1 sentence)",
+        "industry (optional)",
+        "voice_notes (free text, optional — e.g. 'I'm British, I use dry humour, I'm allergic to corporate jargon')"
+      ],
+      "temperature": 0.7,
+      "max_output_tokens": 200,
+      "streaming": "If the provider supports SSE streaming, stream tokens into the contenteditable as they arrive (typewriter effect, ~feels fast). If not, insert the full result at once."
+    },
+    "F4_insertion": {
+      "target": "The currently focused contenteditable comment input.",
+      "method": "Programmatically: focus the contenteditable, set its text content, dispatch a sequence of events that LinkedIn's React listener responds to: `beforeinput` (inputType: 'insertText'), `input` (bubbles: true), and `change`. Confirmed pattern for React-controlled contenteditable.",
+      "post_button_activation": "After insertion, the LinkedIn 'Post' button must become enabled. Verify this via DOM check; if not enabled, dispatch an additional `keydown`+`keyup` synthetic event on the input.",
+      "do_not": "Do not click Post. Do not modify the comment after insertion. Do not show a 'success' toast — silent success is the right UX."
+    },
+    "F5_settings_popup": {
+      "sections": [
+        "Provider: dropdown (OpenAI, Anthropic, Gemini, OpenRouter, Groq, Local/Ollama)",
+        "Model: dropdown if the provider has a known list; free-text input for OpenRouter and Ollama",
+        "API Key: masked input with show/hide toggle; 'Test connection' button that fires a minimal request and reports success/failure",
+        "Persona: collapsible card with the 5 fields from F3.persona_fields",
+        "Footer: links to GitHub repo, the LinkedIn skill file (so users see what's being sent), and a 'Reset all settings' button with confirm"
+      ],
+      "size": "360px wide × auto height, max 600px tall with scroll",
+      "default_state": "Provider = OpenAI. Show a prominent empty-state nudge: 'Add your API key to get started.' if no key is set."
+    },
+    "F6_options_page": {
+      "purpose": "Full-page version of settings (chrome://extensions opens this) plus an 'Advanced' section: override the system prompt (with a 'Reset to default' button that restores the bundled LinkedIn skill), set a custom max output length, toggle streaming on/off, toggle automatic 'see more' expansion.",
+      "important": "Surface the full LinkedIn skill markdown in a read-only viewer with a copy button, so power users understand exactly what is being sent on their behalf. This builds trust."
+    }
+  },
+
+  "user_flows": [
+    {
+      "name": "First-time setup",
+      "steps": [
+        "User installs extension from Chrome Web Store (or loads unpacked from /dist).",
+        "Extension opens onboarding tab automatically (chrome.runtime.onInstalled).",
+        "Onboarding asks: pick provider → paste API key → optional persona → 'Test connection' → done.",
+        "User navigates to LinkedIn feed."
+      ]
+    },
+    {
+      "name": "Generate a comment",
+      "steps": [
+        "User clicks LinkedIn's comment box on a post.",
+        "InlineAI's 'Write with AI' button appears next to the input.",
+        "User clicks the button.",
+        "Button enters loading state. Post is extracted. LLM is called.",
+        "Generated comment streams into the comment box.",
+        "User reviews, optionally edits, clicks LinkedIn's Post button to publish."
+      ]
+    },
+    {
+      "name": "Recover from a bad output",
+      "steps": [
+        "User reads the generated comment and doesn't like it.",
+        "User can: edit it manually, or clear the box and click the button again to regenerate (temperature is high enough that re-rolls vary meaningfully)."
+      ]
+    }
+  ],
+
+  "ui_design_direction": {
+    "aesthetic": "Refined, calm, slightly editorial. Not 'AI brand purple gradient'. Reference points: Linear's settings panels, Arc browser's preferences, Vercel dashboard restraint.",
+    "palette": {
+      "background": "#FAFAF7 light / #0E0E0C dark (warm off-white / warm near-black, not pure)",
+      "foreground": "#1B1B18 / #ECECE6",
+      "muted": "#6F6F68 / #8E8E84",
+      "border": "#E5E5DE / #2A2A26",
+      "accent": "#2563EB (a single confident blue — not LinkedIn blue exactly, slightly more saturated, signals 'we are not LinkedIn')",
+      "danger": "#DC2626"
+    },
+    "typography": {
+      "ui_sans": "Inter Tight or 'General Sans' (via @fontsource if licensing allows; otherwise system-ui with explicit fallbacks)",
+      "ui_mono": "JetBrains Mono for API key display",
+      "scale": "12 / 13 / 14 / 16 / 20 — kept tight, this is a tools UI not a marketing page"
+    },
+    "spacing": "4px base unit. Generous padding (16-20px) inside cards, tight inside controls (8-10px).",
+    "radius": "8px on inputs and buttons, 12px on cards, 999px on the inline 'Write with AI' pill",
+    "motion": [
+      "Inline button entrance: fade + slide-up 4px over 120ms",
+      "Loading spinner: simple rotating arc, 800ms loop",
+      "Generated text typewriter: characters appear in chunks of 4-6 with 12ms cadence (feels fast, not janky)"
+    ],
+    "dark_mode": "Auto-respect prefers-color-scheme. The inline button must look correct on both LinkedIn light and dark themes — detect LinkedIn theme via document.documentElement.getAttribute('data-theme') or a known LinkedIn class."
+  },
+
+  "file_structure": {
+    "tree": [
+      "inlineai/",
+      "├── package.json",
+      "├── tsconfig.json",
+      "├── biome.json",
+      "├── vite.config.ts",
+      "├── tailwind.config.ts",
+      "├── postcss.config.cjs",
+      "├── README.md",
+      "├── LICENSE",
+      "├── .gitignore",
+      "├── public/",
+      "│   ├── icon16.png",
+      "│   ├── icon32.png",
+      "│   ├── icon48.png",
+      "│   └── icon128.png",
+      "├── src/",
+      "│   ├── manifest.ts                  // typed manifest, fed to crxjs",
+      "│   ├── background/",
+      "│   │   └── service-worker.ts       // routes messages, opens onboarding",
+      "│   ├── content/",
+      "│   │   ├── index.ts                 // entry, observers, button mount",
+      "│   │   ├── linkedin-dom.ts          // selectors + post extractor + see-more expander",
+      "│   │   ├── button.ts                // creates and styles the inline button (Shadow DOM)",
+      "│   │   ├── inserter.ts              // inserts text into contenteditable with correct events",
+      "│   │   └── styles.css               // content-script CSS (inlined into shadow root)",
+      "│   ├── popup/",
+      "│   │   ├── index.html",
+      "│   │   ├── main.tsx",
+      "│   │   ├── App.tsx",
+      "│   │   ├── components/",
+      "│   │   │   ├── ProviderSelect.tsx",
+      "│   │   │   ├── ModelSelect.tsx",
+      "│   │   │   ├── ApiKeyInput.tsx",
+      "│   │   │   ├── PersonaCard.tsx",
+      "│   │   │   └── ui/                 // Button, Input, Select, Toggle primitives",
+      "│   │   └── styles.css",
+      "│   ├── options/",
+      "│   │   ├── index.html",
+      "│   │   ├── main.tsx",
+      "│   │   └── App.tsx",
+      "│   ├── llm/",
+      "│   │   ├── types.ts                // LLMProvider interface, Settings type, Zod schemas",
+      "│   │   ├── factory.ts              // getProvider(settings)",
+      "│   │   ├── prompt.ts               // composes systemPrompt + userPrompt from skill + persona + post",
+      "│   │   └── providers/",
+      "│   │       ├── openai.ts",
+      "│   │       ├── anthropic.ts",
+      "│   │       ├── google.ts",
+      "│   │       ├── openrouter.ts",
+      "│   │       ├── groq.ts",
+      "│   │       └── ollama.ts",
+      "│   ├── storage/",
+      "│   │   └── storage.ts              // typed wrapper around chrome.storage.local",
+      "│   ├── skills/",
+      "│   │   └── linkedin-skill.md       // THE prompt — see separate file in this delivery",
+      "│   └── shared/",
+      "│       ├── messages.ts             // typed message protocol between content/background/popup",
+      "│       └── types.ts",
+      "└── tests/",
+      "    ├── providers.test.ts",
+      "    ├── storage.test.ts",
+      "    └── linkedin-dom.test.ts"
+    ]
+  },
+
+  "manifest_v3_requirements": {
+    "manifest_version": 3,
+    "permissions": ["storage", "activeTab", "scripting"],
+    "host_permissions": [
+      "https://www.linkedin.com/*",
+      "https://api.openai.com/*",
+      "https://api.anthropic.com/*",
+      "https://generativelanguage.googleapis.com/*",
+      "https://openrouter.ai/*",
+      "https://api.groq.com/*",
+      "http://localhost/*"
+    ],
+    "content_scripts": [
+      {
+        "matches": ["https://www.linkedin.com/*"],
+        "js": ["src/content/index.ts"],
+        "run_at": "document_idle"
+      }
+    ],
+    "action": { "default_popup": "src/popup/index.html" },
+    "options_page": "src/options/index.html",
+    "background": { "service_worker": "src/background/service-worker.ts", "type": "module" },
+    "icons": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" },
+    "web_accessible_resources": []
+  },
+
+  "linkedin_dom_strategy": {
+    "principle": "LinkedIn renames CSS classes weekly. Selectors must survive class-name churn. Anchor on stable signals.",
+    "stable_signals_to_use": [
+      "role='textbox' contenteditable='true' for comment inputs",
+      "aria-label containing 'Comment' or starting with 'Add a comment' (also handle locales: data-test-id where present)",
+      "article element or [data-id^='urn:li:activity:'] for post containers",
+      "button with aria-label exactly 'see more' for expansion",
+      "header elements with span[dir='ltr'] for author name within a post"
+    ],
+    "comment_box_detection": "Use a single MutationObserver on document.body with subtree:true, attributeFilter:['contenteditable','aria-label']. On each mutation, query for [role='textbox'][contenteditable='true'] that has been newly added or just received focus, and that lives inside an article/post container. Debounce 50ms.",
+    "preventing_duplicate_buttons": "Tag the comment input element with a `data-inlineai-mounted='1'` attribute after mounting. Re-mounting is a no-op if this attr exists.",
+    "shadow_dom": "The button is rendered inside a <div> with attachShadow({mode:'open'}). All InlineAI CSS lives inside the shadow root. The outer <div> uses position:absolute and is appended adjacent to the LinkedIn comment toolbar, positioned via getBoundingClientRect of the comment input.",
+    "resilience": "If selectors fail to find the post container, log to console (gated behind a DEBUG flag in storage) and silently bail. Never throw into LinkedIn's React tree.",
+    "selector_versioning": "Wrap all selectors in a single object exported from linkedin-dom.ts so they can be updated in one place when LinkedIn breaks them. Add a comment with the date last verified."
+  },
+
+  "security_and_privacy": {
+    "rules": [
+      "API key is stored only in chrome.storage.local. Never in chrome.storage.sync. Never in localStorage. Never in cookies.",
+      "API key is never logged to console, even in DEBUG mode (mask all but last 4 chars).",
+      "No analytics, no error reporting service, no external pings.",
+      "CSP: rely on Manifest V3 defaults. Do not relax with unsafe-eval.",
+      "Provider requests are made directly from the content script (or service worker) to the provider URL listed in host_permissions. No proxy.",
+      "Do not send the user's full LinkedIn page HTML to the LLM. Only the extracted, sanitised post data (author display name, headline, post body text, hashtags, post type heuristic).",
+      "Do not include the user's own LinkedIn profile data in the request unless the user typed it into the persona settings.",
+      "Make this transparent in the README and in the options page ('What is sent to your AI provider')."
+    ]
+  },
+
+  "skill_file_integration": {
+    "location": "src/skills/linkedin-skill.md",
+    "loading": "Imported as raw string via Vite ?raw suffix: `import skill from './skills/linkedin-skill.md?raw'`",
+    "usage": "Passed as the system prompt to the LLM. The user prompt is the structured post + persona payload.",
+    "user_override": "The options page allows users to view and edit the system prompt. Custom overrides are stored under `inlineai:customSystemPrompt`. If empty, the bundled skill is used. A 'Reset to default' button clears the override.",
+    "skill_file_authority": "This file is the product. Treat changes to it like product launches. Version it in a comment at the top."
+  },
+
+  "prompt_construction": {
+    "system_prompt": "The full contents of linkedin-skill.md",
+    "user_prompt_template": [
+      "Here is the LinkedIn post and the user's context. Write ONE comment following the rules in your instructions.",
+      "",
+      "<post>",
+      "  <author>{{author_name}}</author>",
+      "  <author_headline>{{author_headline}}</author_headline>",
+      "  <post_type_heuristic>{{post_type}}</post_type_heuristic>",
+      "  <body>",
+      "{{post_body}}",
+      "  </body>",
+      "  <hashtags>{{hashtags}}</hashtags>",
+      "</post>",
+      "",
+      "<commenter_persona>",
+      "  <name>{{persona.name}}</name>",
+      "  <role>{{persona.role}}</role>",
+      "  <expertise>{{persona.expertise}}</expertise>",
+      "  <industry>{{persona.industry}}</industry>",
+      "  <voice_notes>{{persona.voice_notes}}</voice_notes>",
+      "</commenter_persona>",
+      "",
+      "Output: only the comment text. No preamble. No quotes around it. No 'Here's a comment:'."
+    ]
+  },
+
+  "performance_budget": {
+    "content_script_initial_payload": "≤ 30 KB gzipped",
+    "popup_initial_payload": "≤ 150 KB gzipped (React + Tailwind acceptable)",
+    "time_to_button_visible_after_focus": "≤ 100 ms p95",
+    "no_long_tasks": "No content-script function should block the main thread for >50ms. Use requestIdleCallback for the MutationObserver work."
+  },
+
+  "edge_cases_to_handle": [
+    "User clicks button before adding an API key → button shows error tooltip 'Add your API key in InlineAI settings' and opens the popup.",
+    "Post is a video or image with no text body → extract whatever text exists (caption, hashtags); if completely empty, comment based on author + post type only and lower temperature to 0.5.",
+    "Comment box is for a reply (not top-level) → still works; extract the post + the comment being replied to as additional context.",
+    "User is on LinkedIn's messaging page (linkedin.com/messaging) → content script must NOT attach the button. Scope DOM observation to /feed/ and /posts/ and /pulse/ URLs and post pages.",
+    "Network failure mid-stream → leave whatever was streamed in place and show an inline retry pill next to the button.",
+    "User clicks button twice quickly → first request is aborted; second one runs.",
+    "Post contains another language (Hindi, Spanish, French) → comment should be in the SAME language as the post. The skill file must enforce this.",
+    "User's persona is empty → still works, just less personalised. Don't block.",
+    "LinkedIn dark mode → button must adapt. Detect via document.documentElement classList or computed background colour of an anchor element."
+  ],
+
+  "acceptance_criteria": [
+    "`pnpm install && pnpm build` produces a /dist folder loadable as an unpacked Chrome extension with no console errors.",
+    "`pnpm typecheck` passes with strict mode.",
+    "`pnpm test` runs unit tests for providers, storage, and DOM extractor; all green.",
+    "Loading the unpacked extension and navigating to linkedin.com/feed shows the 'Write with AI' button appearing within 100ms of focusing any post's comment input.",
+    "Clicking the button with each of the 6 providers configured produces a comment in the comment box (test at least OpenAI, Anthropic, and Ollama paths).",
+    "Comments produced sound human and post-specific (not 'Great post!'). Spot-check 5 different post types: achievement, opinion, story, question, product launch.",
+    "Comments in non-English posts (Hindi, Spanish) are returned in the same language.",
+    "API key is verifiably not present in chrome.storage.sync, localStorage, or any network request other than to the provider's own URL.",
+    "Extension does not break LinkedIn: feed scroll, post submission, messaging, profile pages all behave normally with InlineAI installed.",
+    "Options page shows the full LinkedIn skill markdown to the user."
+  ],
+
+  "deliverables": [
+    "Complete /inlineai source tree as described in file_structure.",
+    "Bundled /src/skills/linkedin-skill.md (delivered separately in this package; place it verbatim at that path).",
+    "README.md covering: install (unpacked + Web Store), supported providers, where the API key is stored, how to customise the skill prompt, how to contribute, MIT licence note.",
+    "LICENSE (MIT).",
+    ".github/workflows/ci.yml that runs lint, typecheck, build, test on push.",
+    "Screenshots in /docs/ showing the inline button in light and dark LinkedIn modes (the agent can produce SVG mockups if real screenshots aren't possible).",
+    "A CHANGELOG.md initialised at 0.1.0."
+  ],
+
+  "what_to_explicitly_NOT_build_v1": [
+    "Multiple voices/tones beyond the bundled LinkedIn professional voice.",
+    "Keyboard shortcuts.",
+    "Auto-posting.",
+    "X/Twitter, Reddit, Facebook support.",
+    "Analytics / telemetry.",
+    "Account systems.",
+    "Subscription / paid tiers.",
+    "Cloud sync of settings.",
+    "An onboarding video / tour.",
+    "A 'rewrite my draft' mode (this is in the v2 roadmap)."
+  ],
+
+  "v2_roadmap_note_for_README": [
+    "Multi-platform (X, Reddit) via per-platform skill files.",
+    "'Improve my draft' mode — rewrites a draft the user already typed instead of generating from scratch.",
+    "Regenerate with variation chip — re-roll with a tweak (shorter / sharper / add a question).",
+    "Optional: contrarian voice, witty voice, supportive voice — selectable per click.",
+    "Auto-detect post language and let user pin a preferred reply language."
+  ]
+}
