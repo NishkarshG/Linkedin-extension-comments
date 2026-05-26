@@ -538,7 +538,7 @@ function extractReplyContext(
 // look at structural signals only: profile-link <a href="/in/...">, the
 // `dir="ltr"` attribute LinkedIn uses for user-authored text, and ancestry.
 
-function isInsideBadZone(node: Element, container: Element, input: Element): boolean {
+function isInsideBadZone(node: Element, container: Element, input: Element, type?: 'author' | 'body'): boolean {
   let p: Element | null = node.parentElement
   while (p && p !== container) {
     if (p.contains(input)) return true
@@ -553,9 +553,16 @@ function isInsideBadZone(node: Element, container: Element, input: Element): boo
       cls.includes('reaction') ||
       cls.includes('action-bar') ||
       p.tagName === 'FORM' ||
-      role === 'textbox'
+      p.tagName === 'ARTICLE' ||
+      role === 'textbox' ||
+      role === 'article'
     ) {
       return true
+    }
+    if (type === 'body') {
+      if (cls.includes('actor') || cls.includes('header-wrapper') || cls.includes('update-v2__header')) {
+        return true
+      }
     }
     p = p.parentElement
   }
@@ -572,9 +579,9 @@ function dedupeDoubled(text: string): string {
 }
 
 function fallbackAuthor(container: HTMLElement, input: HTMLElement): string {
-  for (const link of container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"]')) {
+  for (const link of container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"], a[href*="/company/"], a[href*="/school/"]')) {
     if (link.contains(input)) continue
-    if (isInsideBadZone(link, container, input)) continue
+    if (isInsideBadZone(link, container, input, 'author')) continue
     const raw = (link.textContent ?? '').trim()
     if (!raw) continue
     const cleaned = dedupeDoubled(collapseWhitespace(raw))
@@ -592,12 +599,26 @@ function fallbackBody(container: HTMLElement, input: HTMLElement): string {
   for (const node of container.querySelectorAll<HTMLElement>('[dir="ltr"]')) {
     if (node.contains(input)) continue
     if (node.closest('a')) continue
-    if (isInsideBadZone(node, container, input)) continue
+    if (isInsideBadZone(node, container, input, 'body')) continue
     const raw = (node.textContent ?? '').trim()
     if (raw.length < 20) continue
     const text = dedupeDoubled(raw)
     if (text.length > best.length) best = text
   }
+
+  // Fallback to any span/div/p if no ltr elements matched
+  if (best.length < 20) {
+    for (const node of container.querySelectorAll<HTMLElement>('span, div, p')) {
+      if (node.contains(input)) continue
+      if (node.closest('a')) continue
+      if (isInsideBadZone(node, container, input, 'body')) continue
+      const raw = (node.textContent ?? '').trim()
+      if (raw.length < 20 || raw.length > 5000) continue
+      const text = dedupeDoubled(raw)
+      if (text.length > best.length) best = text
+    }
+  }
+
   return collapseWhitespace(best).slice(0, 2000)
 }
 
@@ -618,7 +639,13 @@ export function extractPost(input: HTMLElement, container: HTMLElement): PostDat
 
   // Class-name-independent fallbacks — fire when LinkedIn has hashed the classes
   if (!author) {
-    author = fallbackAuthor(container, input)
+    const authorRawFallback = fallbackAuthor(container, input)
+    author = authorRawFallback
+      .replace(
+        /\s*[•··]\s*(Following|Connect|Message|Pending|1st|2nd|3rd\+?|You|degree|member).*$/i,
+        '',
+      )
+      .trim()
     if (author) console.log('[InlineAI] author via fallback:', author)
   }
   if (!body) {
@@ -630,7 +657,7 @@ export function extractPost(input: HTMLElement, container: HTMLElement): PostDat
   // probe one or two siblings/descendants of the author link.
   if (!authorHeadline && author) {
     const authorLink = Array.from(
-      container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"]'),
+      container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"], a[href*="/company/"], a[href*="/school/"]'),
     ).find((a) => !a.contains(input) && (a.textContent ?? '').includes(author.slice(0, 8)))
     if (authorLink) {
       const wrapper = authorLink.closest('div')?.parentElement
