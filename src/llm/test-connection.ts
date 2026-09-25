@@ -13,7 +13,7 @@ export async function testConnection(settings: Settings, signal: AbortSignal): P
     return { ok: false, message: 'Add an API key first.' }
   }
   try {
-    const provider = getProvider(settings, { stream: false, maxOutputTokens: 5, temperature: 0 })
+    const provider = getProvider(settings, { stream: false, maxOutputTokens: 16, temperature: 0 })
     await provider.generateComment({
       systemPrompt: 'You are a connection test. Reply with the single word: ok.',
       userPrompt: 'Say ok.',

@@ -3,7 +3,7 @@
 // (type-only) by the content script, which has a tight bundle budget.
 
 /** Canonical repo URL (used for footer links + OpenRouter attribution). */
-export const REPO_URL = 'https://github.com/inlineai/inlineai'
+export const REPO_URL = 'https://github.com/NishkarshG/Linkedin-extension-comments'
 
 export type ProviderId = 'openai' | 'anthropic' | 'google' | 'openrouter' | 'groq' | 'ollama'
 
@@ -72,11 +72,14 @@ export interface Persona {
 /** Stable error taxonomy surfaced to the user (mapped from provider failures). */
 export type LlmErrorCode =
   | 'no_api_key'
+  | 'no_permission'
   | 'invalid_key'
   | 'rate_limited'
   | 'server_error'
   | 'network'
+  | 'timeout'
   | 'aborted'
   | 'bad_response'
-  | 'empty_post'
+  | 'empty_output'
+  | 'refused'
   | 'unknown'

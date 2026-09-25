@@ -8,6 +8,7 @@ import { ModelSelect } from './components/ModelSelect'
 import { PersonaCard } from './components/PersonaCard'
 import { ProviderSelect } from './components/ProviderSelect'
 import { Button } from './components/ui/Button'
+import { changeProvider } from './useProviderChange'
 import { useSettings } from './useSettings'
 
 export default function App() {
@@ -56,7 +57,7 @@ export default function App() {
 
         <ProviderSelect
           value={settings.providerId}
-          onChange={(providerId: ProviderId) => update({ providerId, model: '' })}
+          onChange={(providerId: ProviderId) => changeProvider(settings, update, providerId)}
         />
         <ModelSelect
           provider={settings.providerId}

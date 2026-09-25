@@ -19,10 +19,12 @@ pnpm-debug.log*
 !.vscode/extensions.json
 *.local
 
-# env / secrets (never commit API keys)
+# env / secrets (never commit API keys or extension signing keys)
 .env
 .env.*
 !.env.example
+*.pem
+*.key
 
 # test / coverage
 coverage/

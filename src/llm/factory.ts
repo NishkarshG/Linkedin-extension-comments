@@ -4,7 +4,13 @@ import { GroqProvider } from './providers/groq'
 import { OllamaProvider } from './providers/ollama'
 import { OpenAIProvider } from './providers/openai'
 import { OpenRouterProvider } from './providers/openrouter'
-import { type LLMProvider, PROVIDERS, type ProviderRuntimeConfig, type Settings } from './types'
+import {
+  type LLMProvider,
+  PROVIDERS,
+  type ProviderRuntimeConfig,
+  type Settings,
+  resolveModel,
+} from './types'
 
 export interface ProviderOptions {
   onToken?: (delta: string) => void
@@ -19,7 +25,7 @@ export interface ProviderOptions {
 export function getProvider(settings: Settings, opts: ProviderOptions = {}): LLMProvider {
   const meta = PROVIDERS[settings.providerId]
   const baseUrl = settings.baseUrlOverride.trim() || meta.baseUrl
-  const model = settings.model.trim() || meta.defaultModel
+  const model = resolveModel(settings)
 
   const config: ProviderRuntimeConfig = {
     apiKey: settings.apiKey.trim(),

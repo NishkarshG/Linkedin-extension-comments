@@ -44,7 +44,9 @@ export class InlineButton {
     this.pill.className = 'pill'
     this.pill.type = 'button'
     this.pill.setAttribute('data-state', 'default')
-    this.pill.setAttribute('aria-label', 'Write a comment with AI')
+    this.pill.setAttribute('aria-label', 'Write a comment with AI (Alt+Shift+W)')
+    this.pill.setAttribute('aria-keyshortcuts', 'Alt+Shift+W')
+    this.pill.title = 'Write with AI (Alt+Shift+W)'
 
     this.iconEl = document.createElement('span')
     this.iconEl.className = 'icon'
@@ -153,11 +155,11 @@ export class InlineButton {
     }, 4000)
   }
 
-  showInfo(message: string): void {
+  showInfo(message: string, ms = 3000): void {
     this.tooltip.textContent = message
     this.tooltip.classList.add('show')
     this.clearTooltipTimer()
-    this.tooltipTimer = window.setTimeout(() => this.tooltip.classList.remove('show'), 3000)
+    this.tooltipTimer = window.setTimeout(() => this.tooltip.classList.remove('show'), ms)
   }
 
   flashSuccess(): void {
@@ -169,7 +171,8 @@ export class InlineButton {
     if (!this.target) return
     const r = this.target.getBoundingClientRect()
     if (r.width === 0 && r.height === 0) {
-      this.hide()
+      // Never drop the target mid-generation: the pill is the only cancel control.
+      if (this.state !== 'loading') this.hide()
       return
     }
     const pillRect = this.pill.getBoundingClientRect()

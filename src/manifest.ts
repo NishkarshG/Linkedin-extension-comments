@@ -35,18 +35,23 @@ export default defineManifest({
     type: 'module',
   },
 
-  permissions: ['storage', 'activeTab', 'scripting'],
+  // Chrome 116+: service worker keep alive for long streams, AbortSignal reasons.
+  minimum_chrome_version: '116',
 
-  host_permissions: [
-    'https://www.linkedin.com/*',
-    'https://linkedin.com/*',
+  // Only storage is always required. The LinkedIn content script is declared in
+  // content_scripts (added by scripts/patch-manifest.mjs), which needs no host
+  // permission of its own.
+  permissions: ['storage'],
+
+  // AI provider hosts are requested one at a time, when the user picks a
+  // provider, so nobody grants access to six AI services they never use.
+  optional_host_permissions: [
     'https://api.openai.com/*',
     'https://api.anthropic.com/*',
     'https://generativelanguage.googleapis.com/*',
     'https://openrouter.ai/*',
     'https://api.groq.com/*',
     'http://localhost/*',
+    'http://127.0.0.1/*',
   ],
-
-  web_accessible_resources: [],
 })

@@ -22,12 +22,14 @@ You only need a key for one. Pick whichever you already use:
 
 | Provider | Default model | Notes |
 | --- | --- | --- |
-| OpenAI | `gpt-4o-mini` | |
-| Anthropic (Claude) | `claude-haiku-4-5` | Browser-direct via the official header |
-| Google Gemini | `gemini-2.0-flash` | |
+| OpenAI | `gpt-5.4-mini` | Reasoning models (GPT-5 family, o series) handled automatically |
+| Anthropic (Claude) | `claude-haiku-4-5` | Browser direct via the official header; system prompt is prompt cached |
+| Google Gemini | `gemini-3.5-flash-lite` | Thinking kept low so it cannot eat the output budget |
 | OpenRouter | `openai/gpt-4o-mini` | Type any model id (hundreds available) |
-| Groq | `llama-3.3-70b-versatile` | Fastest, generous free tier |
-| Local (Ollama) | `llama3.1:8b` | No key needed; runs on your machine |
+| Groq | `openai/gpt-oss-120b` | Fastest, generous free tier |
+| Local (Ollama) | `llama3.1:8b` | No key needed; start Ollama with `OLLAMA_ORIGINS=chrome-extension://*` |
+
+Every provider also accepts a **custom model id**, because providers retire models every few months. If a saved model has been retired (for example `gemini-1.5-flash` or Groq's `llama-3.3-70b-versatile`), InlineAI falls back to the provider default and tells you in settings. Model lists were last reviewed in September 2026.
 
 ## Install (load unpacked)
 
@@ -38,12 +40,29 @@ You only need a key for one. Pick whichever you already use:
    ```
 2. Open `chrome://extensions`, enable **Developer mode** (top-right).
 3. Click **Load unpacked** and select the generated `dist/` folder.
-4. The settings tab opens automatically. Pick a provider, paste your API key, optionally fill in your persona, and hit **Test connection**.
-5. Go to your LinkedIn feed, focus any comment box, and click **✦ Write with AI**.
+4. The settings tab opens automatically. Pick a provider, click **Allow access** so the extension may contact that provider (it asks for that one host only), paste your API key, optionally fill in your persona, and hit **Test connection**.
+5. Go to your LinkedIn feed, focus any comment box, and click **✦ Write with AI** or press **Alt+Shift+W**.
+
+### Using it
+
+* **Alt+Shift+W** in a comment box writes a comment. **Esc** (or typing in the box) cancels a comment that is still being written.
+* If the box already contains **your own draft**, InlineAI asks before replacing it.
+* When replying, the **@mention** LinkedIn adds for the person you reply to is kept.
+* Works on the feed, single posts, profiles, company, school, group, event and search pages. Never in messaging.
 
 ### Install (Chrome Web Store)
 
 A Web Store listing is planned. Until then, use the load-unpacked steps above.
+
+## Permissions
+
+InlineAI asks for as little as possible:
+
+* `storage`: to keep your settings on this device.
+* The LinkedIn content script runs only on `linkedin.com` pages.
+* **One AI provider host, on demand.** Provider hosts are optional permissions. Chrome asks you when you pick a provider (or click **Allow access**), so you never grant access to AI services you do not use.
+
+The content script is intentionally **not** web accessible, so LinkedIn pages cannot probe for the extension's files to detect it.
 
 ## Where your API key is stored
 
@@ -53,7 +72,9 @@ Your key is written **only** to `chrome.storage.local` on this device. It is:
 - never logged (debug logging masks all but the last 4 characters);
 - never sent anywhere except the provider you selected.
 
-The options page has a **"What is sent to your AI provider"** section spelling out exactly what leaves your browser (the post's author name + headline, body text, hashtags, a post-type heuristic, and your persona fields) and what never does (your full LinkedIn page, profile, or activity history).
+The Gemini key is sent in the `x-goog-api-key` header, never in the URL.
+
+The options page has a **"What is sent to your AI provider"** section spelling out exactly what leaves your browser (the post's author name and headline, body text, hashtags, media type, a post type guess, the comment you are replying to when you reply, and your persona fields) and what never does (your full LinkedIn page, profile, or activity history). Post text is escaped and marked as untrusted in the prompt, so a post cannot smuggle instructions to the model.
 
 ## Customising the skill prompt
 
@@ -66,8 +87,8 @@ If you improve the prompt, please open a PR — prompt changes are treated like 
 
 ## How it works (architecture)
 
-- **Content script** (vanilla TS + Shadow DOM, no React, no zod) detects the comment box, renders the pill, extracts the post via resilient selectors, and inserts the result. Kept under a 30 KB gzipped budget.
-- **Background service worker** does the cross-origin LLM call (it has the `host_permissions`, which content scripts don't in MV3) and streams the comment back to the content script over a Port.
+- **Content script** (vanilla TS + Shadow DOM, no React, no zod) detects the comment box, renders the pill, extracts the post via resilient selectors, and inserts the result. Kept under a 30 KB gzipped budget (CI enforces it). Logging only happens when **Debug logging** is on.
+- **Background service worker** does the cross-origin LLM call (it holds the provider host permission, which content scripts don't in MV3) and streams the comment back to the content script over a Port. Requests time out after 60 seconds, empty or cut off answers are reported instead of failing silently.
 - **Popup + options** (React + Tailwind) handle settings, with four hand-built UI primitives (Button, Input, Select, Toggle).
 - **LLM layer** is native `fetch` with a thin per-provider abstraction — no vendor SDKs, saving 500 KB+ of bundle weight.
 
@@ -80,6 +101,12 @@ pnpm test        # Vitest unit tests
 pnpm lint        # Biome
 pnpm build       # typecheck + production build to dist/
 ```
+
+CI runs lint, typecheck, tests and the build on every pull request, checks the content script budget, and uploads a ready to load `inlineai-extension.zip` as a build artifact.
+
+### Signing keys
+
+Never commit a `.pem` file. `.gitignore` blocks `*.pem` and `*.key`. If a key was ever pushed, treat it as compromised: generate a new one, and remove the old file from git history.
 
 ## Contributing
 

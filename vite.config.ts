@@ -15,7 +15,8 @@ export default defineConfig({
   build: {
     target: 'esnext',
     sourcemap: false,
-    // Keep the content-script chunk lean; warn early if we drift past budget.
+    // Popup/options chunks only (the content script is built separately by
+    // scripts/build-content.mjs and must stay under 30 KB gzipped).
     chunkSizeWarningLimit: 200,
   },
   server: {

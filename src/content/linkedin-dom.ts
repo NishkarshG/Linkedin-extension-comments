@@ -7,7 +7,7 @@ import type { MediaType, PostData, PostType } from '@/shared/types'
 // anchored on a STABLE signal (role/aria/semantic structure/data-urn) first,
 // with LinkedIn's semi-stable `*-components-*` class names only as a fallback.
 // All selectors live in this one object so they can be patched in one place.
-// Last verified against LinkedIn web: 2026-05.
+// Last verified against LinkedIn web: 2026-05. Logic reviewed: 2026-09.
 // ===========================================================================
 
 export const SELECTORS = {
@@ -114,6 +114,28 @@ export function debugLog(...args: unknown[]): void {
 // Detection helpers
 // ---------------------------------------------------------------------------
 
+const IN_SCOPE_PREFIXES = [
+  '/feed',
+  '/in/',
+  '/company/',
+  '/school/',
+  '/groups/',
+  '/showcase/',
+  '/events/',
+  '/newsletters/',
+  '/search/results/',
+]
+
+/** Pages where the pill may appear. Messaging is always excluded. */
+export function isInScope(pathname: string = location.pathname): boolean {
+  if (pathname.startsWith('/messaging')) return false
+  return (
+    IN_SCOPE_PREFIXES.some((p) => pathname.startsWith(p)) ||
+    pathname.includes('/posts/') ||
+    pathname.includes('/pulse/')
+  )
+}
+
 export function isInsideMessaging(el: Element): boolean {
   let cur: Element | null = el
   while (cur && cur !== document.body) {
@@ -138,14 +160,26 @@ export function isInsideMessaging(el: Element): boolean {
   return false
 }
 
+/** The "Start a post" / share composer: not a comment box, never show the pill there. */
+export function isInsideShareComposer(el: Element): boolean {
+  return (
+    el.closest(
+      '.share-box, .share-creation-state, [class*="share-box"], [class*="share-creation"], [data-test-modal-id="sharebox"]',
+    ) !== null
+  )
+}
+
 export function isCommentInput(el: Element | null): el is HTMLElement {
   if (!(el instanceof HTMLElement)) return false
-  if (isInsideMessaging(el)) return false
-  if (el.getAttribute('role') !== 'textbox') return false
+  // Must match one of the composer signals (role=textbox, aria-multiline,
+  // data-placeholder, Quill editor). LinkedIn's Quill editor does not always
+  // carry role="textbox", so requiring it here hid the pill entirely.
+  if (!el.matches(SELECTORS.commentInput)) return false
   const ce = el.getAttribute('contenteditable')
   if (ce === null || ce === 'false') return false
-  // We DON'T require a post container here — LinkedIn renames things; the URL
-  // scope check in the content-script entry already excludes /messaging, and a
+  if (isInsideMessaging(el)) return false
+  if (isInsideShareComposer(el)) return false
+  // We DON'T require a post container here — LinkedIn renames things; a
   // missing post container is handled with a friendly error on click.
   return true
 }
@@ -170,8 +204,8 @@ export function findPostContainer(el: Element): HTMLElement | null {
   // ── Stage 1: closest() with stable selectors ──────────────────────────────
   const container = el.closest<HTMLElement>(SELECTORS.postContainer)
   if (container) {
-    console.log(
-      '[InlineAI] findPostContainer stage1 match:',
+    debugLog(
+      'findPostContainer stage1 match:',
       container.tagName,
       container.getAttribute('data-urn') ?? container.className.toString().slice(0, 60),
     )
@@ -196,8 +230,8 @@ export function findPostContainer(el: Element): HTMLElement | null {
     const hasPostUrn = cur.matches(postSelector) || cur.querySelector(postSelector) !== null
 
     if (hasPostUrn) {
-      console.log(
-        '[InlineAI] findPostContainer stage1.5 sibling-URN match:',
+      debugLog(
+        'findPostContainer stage1.5 sibling-URN match:',
         cur.tagName,
         (cur.className ?? '').toString().slice(0, 60),
       )
@@ -218,7 +252,7 @@ export function findPostContainer(el: Element): HTMLElement | null {
       cls.includes('activity-card') ||
       cls.includes('update-v2')
     ) {
-      console.log('[InlineAI] findPostContainer stage2 match:', tag, cls.slice(0, 60))
+      debugLog('findPostContainer stage2 match:', tag, cls.slice(0, 60))
       return cur
     }
     cur = cur.parentElement
@@ -266,8 +300,8 @@ export function findPostContainer(el: Element): HTMLElement | null {
     if (hasExternalProfileLink) {
       const bodyText = (cur.textContent ?? '').trim()
       if (bodyText.length > 20) {
-        console.log(
-          '[InlineAI] findPostContainer stage3 heuristic match:',
+        debugLog(
+          'findPostContainer stage3 heuristic match:',
           cur.tagName,
           (cur.className ?? '').toString().slice(0, 60),
         )
@@ -277,11 +311,11 @@ export function findPostContainer(el: Element): HTMLElement | null {
     cur = cur.parentElement
   }
 
-  console.warn('[InlineAI] findPostContainer: no container found — ancestor chain:')
+  debugLog('findPostContainer: no container found, ancestor chain:')
   cur = el.parentElement
   let i = 0
   while (cur && cur !== document.body && i < 20) {
-    console.warn(
+    debugLog(
       `  [${i}] ${cur.tagName} data-urn=${cur.getAttribute('data-urn')} class=${(cur.className ?? '').toString().slice(0, 80)}`,
     )
     cur = cur.parentElement
@@ -417,18 +451,60 @@ function collapseWhitespace(text: string): string {
 // "see more" expansion
 // ---------------------------------------------------------------------------
 
+// "see more" in the languages LinkedIn ships most. Class names are checked
+// first, so this list only matters when LinkedIn rotates class names.
+const SEE_MORE_LABELS = [
+  'see more',
+  'voir plus',
+  'mehr anzeigen',
+  'ver más',
+  'ver mais',
+  'mostra altro',
+  'meer weergeven',
+  'zobacz więcej',
+  'daha fazla',
+  'visa mer',
+  'se mere',
+  'vis mer',
+  'näytä lisää',
+  'zobrazit více',
+  'mai mult',
+  'показать больше',
+  'більше',
+  'عرض المزيد',
+  'הצג עוד',
+  'अधिक देखें',
+  'lihat selengkapnya',
+  'xem thêm',
+  'ดูเพิ่มเติม',
+  '더보기',
+  'もっと見る',
+  '显示更多',
+  '查看更多',
+  '顯示更多',
+]
+
+export function isSeeMoreButton(btn: HTMLElement): boolean {
+  const label = (btn.getAttribute('aria-label') ?? '').toLowerCase()
+  const text = (btn.textContent ?? '')
+    .toLowerCase()
+    .replace(/[…\s.]+/g, ' ')
+    .trim()
+  if (SEE_MORE_LABELS.some((l) => text === l || text.endsWith(l) || label.includes(l))) {
+    return true
+  }
+  // Language independent fallback. The same toggle turns into "see less" once
+  // expanded, so only trust the class while LinkedIn says it is collapsed.
+  const cls = (btn.className ?? '').toString().toLowerCase()
+  const collapsed = btn.getAttribute('aria-expanded') === 'false'
+  return collapsed && (cls.includes('see-more') || cls.includes('show-more-text__button'))
+}
+
 export async function expandSeeMore(container: HTMLElement): Promise<void> {
   const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>(SELECTORS.seeMore))
-  const seeMore = buttons.find((btn) => {
-    const label = (btn.getAttribute('aria-label') ?? '').toLowerCase()
-    const text = (btn.textContent ?? '').toLowerCase().trim()
-    return (
-      text === 'see more' ||
-      text === '…see more' ||
-      text.endsWith('see more') ||
-      label.includes('see more')
-    )
-  })
+  const seeMore = buttons.find(
+    (btn) => btn.getAttribute('aria-expanded') !== 'true' && isSeeMoreButton(btn),
+  )
   if (seeMore) {
     seeMore.click()
     await delay(120)
@@ -472,7 +548,7 @@ const TYPE_PATTERNS: Array<[PostType, RegExp]> = [
   ],
   [
     'hiring',
-    /\b(we'?re hiring|now hiring|hiring|join (our|the) team|open (role|position)|apply now|we are recruiting|looking to hire)\b/i,
+    /(#hiring\b|\b(we'?re hiring|we are hiring|i'?m hiring|is hiring|are hiring|now hiring|hiring for|hiring an? |join (our|the) team|open (role|position)s?|apply now|we are recruiting|looking to hire)\b)/i,
   ],
   [
     'achievement',
@@ -504,13 +580,18 @@ const TYPE_PATTERNS: Array<[PostType, RegExp]> = [
   ],
 ]
 
-export function classifyPostType(body: string, headline = ''): PostType {
-  const haystack = `${body}\n${headline}`
+/**
+ * Heuristic post type from the post BODY only. The author's headline is not
+ * used: a headline like "Hiring manager" or "Mental health advocate" used to
+ * label every post by that author.
+ */
+export function classifyPostType(body: string): PostType {
+  const text = body.trim()
   for (const [type, pattern] of TYPE_PATTERNS) {
-    if (pattern.test(haystack)) return type
+    if (pattern.test(text)) return type
   }
   // Short, low-text content → likely a meme/observational one-liner.
-  if (body.trim().length > 0 && body.trim().length < 80) return 'meme'
+  if (text.length > 0 && text.length < 80) return 'meme'
   return 'unknown'
 }
 
@@ -538,7 +619,12 @@ function extractReplyContext(
 // look at structural signals only: profile-link <a href="/in/...">, the
 // `dir="ltr"` attribute LinkedIn uses for user-authored text, and ancestry.
 
-function isInsideBadZone(node: Element, container: Element, input: Element, type?: 'author' | 'body'): boolean {
+function isInsideBadZone(
+  node: Element,
+  container: Element,
+  input: Element,
+  type?: 'author' | 'body',
+): boolean {
   let p: Element | null = node.parentElement
   while (p && p !== container) {
     if (p.contains(input)) return true
@@ -560,7 +646,11 @@ function isInsideBadZone(node: Element, container: Element, input: Element, type
       return true
     }
     if (type === 'body') {
-      if (cls.includes('actor') || cls.includes('header-wrapper') || cls.includes('update-v2__header')) {
+      if (
+        cls.includes('actor') ||
+        cls.includes('header-wrapper') ||
+        cls.includes('update-v2__header')
+      ) {
         return true
       }
     }
@@ -579,7 +669,9 @@ function dedupeDoubled(text: string): string {
 }
 
 function fallbackAuthor(container: HTMLElement, input: HTMLElement): string {
-  for (const link of container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"], a[href*="/company/"], a[href*="/school/"]')) {
+  for (const link of container.querySelectorAll<HTMLAnchorElement>(
+    'a[href*="/in/"], a[href*="/company/"], a[href*="/school/"]',
+  )) {
     if (link.contains(input)) continue
     if (isInsideBadZone(link, container, input, 'author')) continue
     const raw = (link.textContent ?? '').trim()
@@ -593,10 +685,13 @@ function fallbackAuthor(container: HTMLElement, input: HTMLElement): string {
 
 function fallbackBody(container: HTMLElement, input: HTMLElement): string {
   let best = ''
-  // `dir="ltr"` is LinkedIn's stable marker for user-authored text. We exclude
-  // anything inside an <a> (those are profile/hashtag links, not body) and
-  // anything inside the comment/composer zone (other people's comments).
-  for (const node of container.querySelectorAll<HTMLElement>('[dir="ltr"]')) {
+  // `dir` is LinkedIn's stable marker for user-authored text ("ltr", or "rtl"
+  // for Arabic/Hebrew posts). We exclude anything inside an <a> (those are
+  // profile/hashtag links, not body) and anything inside the comment/composer
+  // zone (other people's comments).
+  for (const node of container.querySelectorAll<HTMLElement>(
+    '[dir="ltr"], [dir="rtl"], [dir="auto"]',
+  )) {
     if (node.contains(input)) continue
     if (node.closest('a')) continue
     if (isInsideBadZone(node, container, input, 'body')) continue
@@ -606,7 +701,7 @@ function fallbackBody(container: HTMLElement, input: HTMLElement): string {
     if (text.length > best.length) best = text
   }
 
-  // Fallback to any span/div/p if no ltr elements matched
+  // Fallback to any span/div/p if no dir-marked elements matched
   if (best.length < 20) {
     for (const node of container.querySelectorAll<HTMLElement>('span, div, p')) {
       if (node.contains(input)) continue
@@ -626,38 +721,38 @@ function fallbackBody(container: HTMLElement, input: HTMLElement): string {
 // Top-level extractor
 // ---------------------------------------------------------------------------
 
-export function extractPost(input: HTMLElement, container: HTMLElement): PostData {
-  const authorRaw = firstText(container, SELECTORS.author, 'author')
-  let author = authorRaw
+/** Strip connection-degree and follow-button noise LinkedIn appends to names. */
+function cleanAuthor(raw: string): string {
+  return raw
     .replace(
-      /\s*[•··]\s*(Following|Connect|Message|Pending|1st|2nd|3rd\+?|You|degree|member).*$/i,
+      /\s*[•·]\s*(Following|Connect|Message|Pending|1st|2nd|3rd\+?|You|degree|member).*$/i,
       '',
     )
     .trim()
+}
+
+export function extractPost(input: HTMLElement, container: HTMLElement): PostData {
+  let author = cleanAuthor(firstText(container, SELECTORS.author, 'author'))
   let authorHeadline = firstText(container, SELECTORS.authorHeadline, 'headline')
   let body = firstText(container, SELECTORS.body, 'body')
 
   // Class-name-independent fallbacks — fire when LinkedIn has hashed the classes
   if (!author) {
-    const authorRawFallback = fallbackAuthor(container, input)
-    author = authorRawFallback
-      .replace(
-        /\s*[•··]\s*(Following|Connect|Message|Pending|1st|2nd|3rd\+?|You|degree|member).*$/i,
-        '',
-      )
-      .trim()
-    if (author) console.log('[InlineAI] author via fallback:', author)
+    author = cleanAuthor(fallbackAuthor(container, input))
+    if (author) debugLog('author via fallback:', author)
   }
   if (!body) {
     body = fallbackBody(container, input)
-    if (body) console.log('[InlineAI] body via fallback (len):', body.length)
+    if (body) debugLog('body via fallback (len):', body.length)
   }
   // Headline often appears right after the author link as another `dir="ltr"`
   // text node. If we found an author via fallback and headline is still empty,
   // probe one or two siblings/descendants of the author link.
   if (!authorHeadline && author) {
     const authorLink = Array.from(
-      container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"], a[href*="/company/"], a[href*="/school/"]'),
+      container.querySelectorAll<HTMLAnchorElement>(
+        'a[href*="/in/"], a[href*="/company/"], a[href*="/school/"]',
+      ),
     ).find((a) => !a.contains(input) && (a.textContent ?? '').includes(author.slice(0, 8)))
     if (authorLink) {
       const wrapper = authorLink.closest('div')?.parentElement
@@ -676,7 +771,7 @@ export function extractPost(input: HTMLElement, container: HTMLElement): PostDat
 
   const mediaType = detectMediaType(container)
   const hashtags = extractHashtags(container, body)
-  const postType = classifyPostType(body, authorHeadline)
+  const postType = classifyPostType(body)
   const reply = extractReplyContext(input, container)
 
   const post: PostData = {

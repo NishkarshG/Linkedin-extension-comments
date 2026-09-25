@@ -1,6 +1,7 @@
 import type { ProviderId } from '@/shared/types'
 import {
   type GenerateParams,
+  type GenerateResult,
   type LLMProvider,
   LlmError,
   type ProviderRuntimeConfig,
@@ -10,9 +11,26 @@ import {
 // Error mapping (shared by every provider) — spec: F3 / provider error_handling
 // ---------------------------------------------------------------------------
 
-export function mapHttpError(status: number, bodyText: string, provider: string): LlmError {
+export function mapHttpError(
+  status: number,
+  bodyText: string,
+  provider: string,
+  providerId?: ProviderId,
+): LlmError {
+  if (providerId === 'ollama' && status === 403) {
+    return new LlmError(
+      'invalid_key',
+      'Ollama blocked the request. Restart Ollama with OLLAMA_ORIGINS=chrome-extension://* set.',
+    )
+  }
   if (status === 401 || status === 403) {
     return new LlmError('invalid_key', 'Invalid API key. Open InlineAI settings to update it.')
+  }
+  if (status === 404) {
+    return new LlmError(
+      'bad_response',
+      `${provider} could not find that model. Pick another model in InlineAI settings.`,
+    )
   }
   if (status === 429) {
     return new LlmError('rate_limited', 'Rate limited by provider. Try again in a few seconds.')
@@ -26,6 +44,9 @@ export function mapHttpError(status: number, bodyText: string, provider: string)
 
 export function toLlmError(err: unknown, provider: string): LlmError {
   if (err instanceof LlmError) return err
+  if (err instanceof DOMException && err.name === 'TimeoutError') {
+    return new LlmError('timeout', `${provider} took too long to respond. Try again.`)
+  }
   if (err instanceof DOMException && err.name === 'AbortError') {
     return new LlmError('aborted', 'Request cancelled.')
   }
@@ -54,7 +75,7 @@ export async function* iterateSSE(
   let buffer = ''
   try {
     while (true) {
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
@@ -76,6 +97,77 @@ export async function* iterateSSE(
 }
 
 // ---------------------------------------------------------------------------
+// Per-model request tuning for OpenAI-compatible APIs
+// ---------------------------------------------------------------------------
+
+/** How a specific model wants its Chat Completions request shaped. */
+export interface ModelTuning {
+  /** Name of the output cap parameter. */
+  tokenParam: 'max_tokens' | 'max_completion_tokens'
+  /** Reasoning models reject custom temperature. */
+  sendTemperature: boolean
+  /** Sent as `reasoning_effort` when set. */
+  reasoningEffort?: string
+  /** Extra output budget for hidden reasoning tokens, which count against the cap. */
+  reasoningHeadroom: number
+}
+
+export const STANDARD_TUNING: ModelTuning = {
+  tokenParam: 'max_tokens',
+  sendTemperature: true,
+  reasoningHeadroom: 0,
+}
+
+/**
+ * OpenAI models: reasoning models (o series, GPT-5 family) reject `temperature`
+ * and `max_tokens`. Every current OpenAI chat model accepts `max_completion_tokens`.
+ */
+export function openAITuning(model: string): ModelTuning {
+  const m = model.toLowerCase()
+  if (/^o\d/.test(m)) {
+    return {
+      tokenParam: 'max_completion_tokens',
+      sendTemperature: false,
+      reasoningEffort: 'low',
+      reasoningHeadroom: 2048,
+    }
+  }
+  const gpt5 = m.match(/^gpt-5(?:\.(\d+))?/)
+  if (gpt5 && !m.includes('-chat')) {
+    const minor = Number(gpt5[1] ?? '0')
+    // GPT-5.1 and later support effort "none" (no hidden reasoning at all);
+    // the original GPT-5 family bottoms out at "minimal".
+    return minor >= 1
+      ? {
+          tokenParam: 'max_completion_tokens',
+          sendTemperature: false,
+          reasoningEffort: 'none',
+          reasoningHeadroom: 0,
+        }
+      : {
+          tokenParam: 'max_completion_tokens',
+          sendTemperature: false,
+          reasoningEffort: 'minimal',
+          reasoningHeadroom: 1024,
+        }
+  }
+  return { tokenParam: 'max_completion_tokens', sendTemperature: true, reasoningHeadroom: 0 }
+}
+
+/** Groq: gpt-oss models reason before answering, so give them room and keep effort low. */
+export function groqTuning(model: string): ModelTuning {
+  if (model.toLowerCase().includes('gpt-oss')) {
+    return {
+      tokenParam: 'max_completion_tokens',
+      sendTemperature: true,
+      reasoningEffort: 'low',
+      reasoningHeadroom: 1024,
+    }
+  }
+  return { tokenParam: 'max_completion_tokens', sendTemperature: true, reasoningHeadroom: 0 }
+}
+
+// ---------------------------------------------------------------------------
 // OpenAI-compatible Chat Completions provider (OpenAI, OpenRouter, Groq, Ollama)
 // ---------------------------------------------------------------------------
 
@@ -85,6 +177,8 @@ export interface OpenAICompatOptions extends ProviderRuntimeConfig {
   /** Builds auth headers from the API key. Default: Bearer. Ollama overrides to none. */
   authHeaders?: (apiKey: string) => Record<string, string>
   extraHeaders?: Record<string, string>
+  /** Shapes the request for the selected model. Default: plain max_tokens + temperature. */
+  tuning?: (model: string) => ModelTuning
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -96,23 +190,36 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.opts = opts
   }
 
-  async generateComment({ systemPrompt, userPrompt, signal }: GenerateParams): Promise<string> {
-    const { baseUrl, model, apiKey, maxOutputTokens, temperature, stream, providerName } = this.opts
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      ...(this.opts.authHeaders ?? defaultBearer)(apiKey),
-      ...(this.opts.extraHeaders ?? {}),
-    }
-    const body = JSON.stringify({
+  /** The JSON body for a Chat Completions request (exposed for tests). */
+  buildBody(systemPrompt: string, userPrompt: string): Record<string, unknown> {
+    const { model, maxOutputTokens, temperature, stream } = this.opts
+    const tuning = (this.opts.tuning ?? (() => STANDARD_TUNING))(model)
+    const body: Record<string, unknown> = {
       model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      temperature,
-      max_tokens: maxOutputTokens,
+      [tuning.tokenParam]: maxOutputTokens + tuning.reasoningHeadroom,
       stream,
-    })
+    }
+    if (tuning.sendTemperature) body.temperature = temperature
+    if (tuning.reasoningEffort) body.reasoning_effort = tuning.reasoningEffort
+    return body
+  }
+
+  async generateComment({
+    systemPrompt,
+    userPrompt,
+    signal,
+  }: GenerateParams): Promise<GenerateResult> {
+    const { baseUrl, apiKey, stream, providerName } = this.opts
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      ...(this.opts.authHeaders ?? defaultBearer)(apiKey),
+      ...(this.opts.extraHeaders ?? {}),
+    }
+    const body = JSON.stringify(this.buildBody(systemPrompt, userPrompt))
 
     let response: Response
     try {
@@ -127,31 +234,38 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
 
     if (!response.ok) {
-      throw mapHttpError(response.status, await safeText(response), providerName)
+      throw mapHttpError(response.status, await safeText(response), providerName, this.id)
     }
 
     if (stream) {
       let acc = ''
+      let finish: string | null = null
       try {
         for await (const data of iterateSSE(response, signal)) {
-          const delta = extractOpenAIDelta(data)
-          if (delta) {
-            acc += delta
-            this.opts.onToken?.(delta)
+          const chunk = parseOpenAIChunk(data)
+          if (chunk.delta) {
+            acc += chunk.delta
+            this.opts.onToken?.(chunk.delta)
           }
+          if (chunk.finish) finish = chunk.finish
         }
       } catch (err) {
         throw toLlmError(err, providerName)
       }
-      return acc.trim()
+      return { text: acc.trim(), truncated: finish === 'length' }
     }
 
-    const json = (await response.json()) as unknown
-    const text = extractOpenAIMessage(json)
-    if (text == null) {
+    let json: unknown
+    try {
+      json = await response.json()
+    } catch {
+      throw new LlmError('bad_response', `${providerName} returned an unreadable response.`)
+    }
+    const message = extractOpenAIMessage(json)
+    if (message == null) {
       throw new LlmError('bad_response', `${providerName} returned an unexpected response shape.`)
     }
-    return text.trim()
+    return { text: message.text.trim(), truncated: message.finish === 'length' }
   }
 }
 
@@ -171,18 +285,23 @@ export async function safeText(response: Response): Promise<string> {
   }
 }
 
-function extractOpenAIDelta(data: string): string | null {
+function parseOpenAIChunk(data: string): { delta: string | null; finish: string | null } {
   try {
     const parsed = JSON.parse(data) as {
-      choices?: Array<{ delta?: { content?: string | null } }>
+      choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>
     }
-    return parsed.choices?.[0]?.delta?.content ?? null
+    const choice = parsed.choices?.[0]
+    return { delta: choice?.delta?.content ?? null, finish: choice?.finish_reason ?? null }
   } catch {
-    return null
+    return { delta: null, finish: null }
   }
 }
 
-function extractOpenAIMessage(json: unknown): string | null {
-  const parsed = json as { choices?: Array<{ message?: { content?: string | null } }> }
-  return parsed.choices?.[0]?.message?.content ?? null
+function extractOpenAIMessage(json: unknown): { text: string; finish: string | null } | null {
+  const parsed = json as {
+    choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>
+  }
+  const choice = parsed.choices?.[0]
+  if (!choice?.message) return null
+  return { text: choice.message.content ?? '', finish: choice.finish_reason ?? null }
 }

@@ -3,37 +3,56 @@ import { z } from 'zod'
 
 // ---------------------------------------------------------------------------
 // Settings + persona schemas (validated on every read from chrome.storage.local)
+//
+// Every field has a `.catch()` so one bad or out-of-range value only resets
+// THAT field. Previously a single invalid field threw the whole object away,
+// silently wiping the user's API key.
 // ---------------------------------------------------------------------------
 
-export const PersonaSchema = z.object({
-  name: z.string().default(''),
-  role: z.string().default(''),
-  expertise: z.string().default(''),
-  industry: z.string().default(''),
-  voiceNotes: z.string().default(''),
-})
+const str = () => z.string().default('').catch('')
+
+export const PersonaSchema = z
+  .object({
+    name: str(),
+    role: str(),
+    expertise: str(),
+    industry: str(),
+    voiceNotes: str(),
+  })
+  .default({})
+  .catch({ name: '', role: '', expertise: '', industry: '', voiceNotes: '' })
 
 export type Persona = z.infer<typeof PersonaSchema>
+
+export const MAX_OUTPUT_TOKENS_MIN = 20
+export const MAX_OUTPUT_TOKENS_MAX = 2000
 
 export const SettingsSchema = z.object({
   providerId: z
     .enum(['openai', 'anthropic', 'google', 'openrouter', 'groq', 'ollama'])
-    .default('openai'),
+    .default('openai')
+    .catch('openai'),
   /** Empty string means "use the provider's default model". */
-  model: z.string().default(''),
-  apiKey: z.string().default(''),
-  /** Optional base-URL override (mainly for self-hosted Ollama on a non-default host). */
-  baseUrlOverride: z.string().default(''),
-  persona: PersonaSchema.default({}),
+  model: str(),
+  apiKey: str(),
+  /** Optional base URL override (mainly for self hosted Ollama on a non default host). */
+  baseUrlOverride: str(),
+  persona: PersonaSchema,
 
   // ----- Advanced (options page) -----
   /** When non-empty, overrides the bundled linkedin-skill.md system prompt. */
-  customSystemPrompt: z.string().default(''),
-  maxOutputTokens: z.number().int().positive().max(2000).default(200),
-  temperature: z.number().min(0).max(2).default(1.0),
-  streaming: z.boolean().default(true),
-  autoExpandSeeMore: z.boolean().default(true),
-  debug: z.boolean().default(false),
+  customSystemPrompt: str(),
+  maxOutputTokens: z
+    .number()
+    .int()
+    .min(MAX_OUTPUT_TOKENS_MIN)
+    .max(MAX_OUTPUT_TOKENS_MAX)
+    .default(200)
+    .catch(200),
+  temperature: z.number().min(0).max(2).default(1.0).catch(1.0),
+  streaming: z.boolean().default(true).catch(true),
+  autoExpandSeeMore: z.boolean().default(true).catch(true),
+  debug: z.boolean().default(false).catch(false),
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -54,6 +73,13 @@ export interface GenerateParams {
   signal: AbortSignal
 }
 
+/** What a provider returns: the text plus whether the model hit the output cap. */
+export interface GenerateResult {
+  text: string
+  /** True when the provider stopped because of the max output tokens limit. */
+  truncated: boolean
+}
+
 /** Config a provider class is constructed with (resolved from Settings). */
 export interface ProviderRuntimeConfig {
   apiKey: string
@@ -68,7 +94,7 @@ export interface ProviderRuntimeConfig {
 
 export interface LLMProvider {
   readonly id: ProviderId
-  generateComment(params: GenerateParams): Promise<string>
+  generateComment(params: GenerateParams): Promise<GenerateResult>
 }
 
 /** Typed error with a stable code; providers map HTTP/network failures into this. */
@@ -83,6 +109,9 @@ export class LlmError extends Error {
 
 // ---------------------------------------------------------------------------
 // Provider registry (UI metadata + defaults). Imported by popup/options + factory.
+//
+// Model lists go stale quickly (providers retire models every few months), so
+// every provider also accepts a custom model id in the UI. Last reviewed: 2026-09.
 // ---------------------------------------------------------------------------
 
 export interface ProviderMeta {
@@ -90,7 +119,7 @@ export interface ProviderMeta {
   displayName: string
   baseUrl: string
   defaultModel: string
-  /** Known model list, or 'freeform' when the user must type a model id. */
+  /** Suggested models, or 'freeform' when the user must type a model id. */
   models: string[] | 'freeform'
   requiresKey: boolean
   keyHelpUrl?: string
@@ -102,8 +131,8 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     id: 'openai',
     displayName: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
-    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'o4-mini'],
+    defaultModel: 'gpt-5.4-mini',
+    models: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5-mini', 'gpt-4.1-mini', 'gpt-4o-mini'],
     requiresKey: true,
     keyHelpUrl: 'https://platform.openai.com/api-keys',
   },
@@ -111,13 +140,8 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     id: 'anthropic',
     displayName: 'Anthropic (Claude)',
     baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-haiku-4-5-20251001',
-    models: [
-      'claude-opus-4-7',
-      'claude-opus-4-6',
-      'claude-sonnet-4-6',
-      'claude-haiku-4-5-20251001',
-    ],
+    defaultModel: 'claude-haiku-4-5',
+    models: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-sonnet-5', 'claude-opus-4-8'],
     requiresKey: true,
     keyHelpUrl: 'https://console.anthropic.com/settings/keys',
   },
@@ -125,16 +149,8 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     id: 'google',
     displayName: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    defaultModel: 'gemini-1.5-flash',
-    models: [
-      'gemini-1.5-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-pro',
-      'gemini-1.5-pro-latest',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-2.5-pro',
-    ],
+    defaultModel: 'gemini-3.5-flash-lite',
+    models: ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
     requiresKey: true,
     keyHelpUrl: 'https://aistudio.google.com/app/apikey',
   },
@@ -146,14 +162,14 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     models: 'freeform',
     requiresKey: true,
     keyHelpUrl: 'https://openrouter.ai/keys',
-    note: 'OpenRouter exposes hundreds of models — type any model id (e.g. anthropic/claude-3.5-sonnet).',
+    note: 'OpenRouter exposes hundreds of models. Type any model id, for example anthropic/claude-haiku-4.5.',
   },
   groq: {
     id: 'groq',
     displayName: 'Groq (fastest, free tier)',
     baseUrl: 'https://api.groq.com/openai/v1',
-    defaultModel: 'llama-3.3-70b-versatile',
-    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
+    defaultModel: 'openai/gpt-oss-120b',
+    models: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
     requiresKey: true,
     keyHelpUrl: 'https://console.groq.com/keys',
   },
@@ -165,8 +181,32 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     models: 'freeform',
     requiresKey: false,
     keyHelpUrl: 'https://ollama.com/download',
-    note: 'Requires Ollama running locally. No API key needed. Type any installed model id.',
+    note: 'Requires Ollama running locally, started with OLLAMA_ORIGINS=chrome-extension://* so the extension may call it. No API key needed. Type any installed model id.',
   },
+}
+
+/**
+ * Model ids that providers have shut down. A stored value matching one of
+ * these falls back to the provider default instead of failing every request.
+ */
+const RETIRED_MODEL_PATTERNS: RegExp[] = [
+  /^gemini-1\.5/,
+  /^gemini-2\.0/,
+  /^mixtral-8x7b-32768$/,
+  /^llama-3\.3-70b-versatile$/,
+  /^llama-3\.1-8b-instant$/,
+  /^llama3-(8b|70b)-8192$/,
+]
+
+export function isRetiredModel(model: string): boolean {
+  return RETIRED_MODEL_PATTERNS.some((re) => re.test(model))
+}
+
+/** The model a request will actually use: the stored choice, or the provider default. */
+export function resolveModel(settings: Pick<Settings, 'providerId' | 'model'>): string {
+  const model = settings.model.trim()
+  if (!model || isRetiredModel(model)) return PROVIDERS[settings.providerId].defaultModel
+  return model
 }
 
 /** OpenRouter attribution headers (see provider spec). */

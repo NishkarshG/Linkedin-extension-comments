@@ -36,3 +36,21 @@ jobs:
 
       - name: Build
         run: pnpm build:only
+
+      - name: Check content script budget and manifest
+        run: |
+          size=$(gzip -c dist/assets/content-script.js | wc -c)
+          echo "content-script.js gzipped: ${size} bytes"
+          test "$size" -lt 30720
+          if grep -q "web_accessible_resources" dist/manifest.json; then
+            echo "content script must not be web accessible" && exit 1
+          fi
+
+      - name: Package extension
+        run: cd dist && zip -qr ../inlineai-extension.zip .
+
+      - name: Upload extension zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: inlineai-extension
+          path: inlineai-extension.zip
