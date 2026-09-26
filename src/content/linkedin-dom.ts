@@ -200,7 +200,19 @@ export function commentInputFrom(target: EventTarget | null): HTMLElement | null
  *          both a profile link and non-trivial text — works even when
  *          LinkedIn has fully rotated every class name.
  */
-export function findPostContainer(el: Element): HTMLElement | null {
+export function findPostContainer(input: Element): HTMLElement | null {
+  // A reply composer sits inside a comment item, which LinkedIn renders as an
+  // <article> (matched by the generic selectors below). Start the search from
+  // outside the outermost comment item so replies still resolve to the post.
+  let el: Element = input
+  for (
+    let item = input.closest(SELECTORS.replyAncestor);
+    item?.parentElement;
+    item = item.parentElement.closest(SELECTORS.replyAncestor)
+  ) {
+    el = item.parentElement
+  }
+
   // ── Stage 1: closest() with stable selectors ──────────────────────────────
   const container = el.closest<HTMLElement>(SELECTORS.postContainer)
   if (container) {

@@ -4,6 +4,12 @@ All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and the
 [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [Unreleased]
+
+### Fixed
+
+- Replying to a comment now reads the original post (author, headline, body). LinkedIn renders comments as `<article>` elements, so the reply's own comment was mistaken for the post and the model only saw that comment.
+
 ## [0.2.0] - 2026-09-25
 
 Fixes from the full audit of 0.1.0.

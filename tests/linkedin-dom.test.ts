@@ -62,6 +62,38 @@ describe('extractPost', () => {
   })
 })
 
+describe('extractPost (reply to a comment)', () => {
+  // LinkedIn renders each comment as an <article>, with the reply box inside it.
+  const REPLY_HTML = `
+    <div data-urn="urn:li:activity:7222222222">
+      <div class="update-components-actor__title">
+        <span dir="ltr"><span aria-hidden="true">Marcus Webb</span></span>
+      </div>
+      <div class="update-components-actor__description">Staff Engineer</div>
+      <div class="update-components-update-v2__commentary">
+        After 9 months we just shipped v1 of our internal deploy tool.
+      </div>
+      <article class="comments-comment-entity" data-id="urn:li:comment:(activity:7222222222,1)">
+        <div class="comments-comment-item__main-content">Did you consider feature flags?</div>
+        <div role="textbox" contenteditable="true" aria-label="Add a reply"></div>
+      </article>
+    </div>
+  `
+
+  it('reads the post, not the comment, and adds the comment as context', () => {
+    document.body.innerHTML = REPLY_HTML
+    const input = document.querySelector<HTMLElement>('[role="textbox"]')!
+    const container = findPostContainer(input)!
+    expect(container.getAttribute('data-urn')).toBe('urn:li:activity:7222222222')
+
+    const post = extractPost(input, container)
+    expect(post.author).toBe('Marcus Webb')
+    expect(post.body).toContain('shipped v1')
+    expect(post.isReply).toBe(true)
+    expect(post.repliedToText).toBe('Did you consider feature flags?')
+  })
+})
+
 describe('classifyPostType', () => {
   it('detects common post types from the body', () => {
     expect(classifyPostType('We are hiring a Senior PM! Apply now.')).toBe('hiring')
