@@ -5,6 +5,9 @@
 /** Canonical repo URL (used for footer links + OpenRouter attribution). */
 export const REPO_URL = 'https://github.com/NishkarshG/Linkedin-extension-comments'
 
+/** Sites the content script runs on. Each has its own DOM adapter and skill prompt. */
+export type Platform = 'linkedin' | 'x'
+
 export type ProviderId = 'openai' | 'anthropic' | 'google' | 'openrouter' | 'groq' | 'ollama'
 
 export const PROVIDER_IDS: ProviderId[] = [
@@ -16,7 +19,7 @@ export const PROVIDER_IDS: ProviderId[] = [
   'ollama',
 ]
 
-/** Heuristic classification of a LinkedIn post, refined by the model at write time. */
+/** Heuristic classification of a post, refined by the model at write time. */
 export type PostType =
   | 'achievement'
   | 'opinion'
@@ -48,6 +51,8 @@ export type MediaType = 'text' | 'article' | 'image' | 'video' | 'document' | 'r
 
 /** Sanitised post data extracted from the DOM. Never raw page HTML. */
 export interface PostData {
+  /** Where the post was read, which picks the skill prompt. */
+  platform: Platform
   author: string
   authorHeadline: string
   body: string

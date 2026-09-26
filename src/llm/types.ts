@@ -42,6 +42,8 @@ export const SettingsSchema = z.object({
   // ----- Advanced (options page) -----
   /** When non-empty, overrides the bundled linkedin-skill.md system prompt. */
   customSystemPrompt: str(),
+  /** When non-empty, overrides the bundled x-skill.md system prompt. */
+  customSystemPromptX: str(),
   maxOutputTokens: z
     .number()
     .int()
@@ -211,4 +213,4 @@ export function resolveModel(settings: Pick<Settings, 'providerId' | 'model'>): 
 
 /** OpenRouter attribution headers (see provider spec). */
 export const OPENROUTER_REFERER = REPO_URL
-export const OPENROUTER_TITLE = 'InlineAI for LinkedIn'
+export const OPENROUTER_TITLE = 'InlineAI'

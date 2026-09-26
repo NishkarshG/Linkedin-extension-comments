@@ -787,6 +787,7 @@ export function extractPost(input: HTMLElement, container: HTMLElement): PostDat
   const reply = extractReplyContext(input, container)
 
   const post: PostData = {
+    platform: 'linkedin',
     author,
     authorHeadline,
     body,

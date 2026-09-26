@@ -19,7 +19,12 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 manifest.content_scripts = [
   {
     js: ['assets/content-script.js'],
-    matches: ['https://www.linkedin.com/*', 'https://linkedin.com/*'],
+    matches: [
+      'https://www.linkedin.com/*',
+      'https://linkedin.com/*',
+      'https://x.com/*',
+      'https://twitter.com/*',
+    ],
     run_at: 'document_idle',
   },
 ]

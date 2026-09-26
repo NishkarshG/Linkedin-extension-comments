@@ -81,7 +81,7 @@ async function runGeneration(
     return
   }
 
-  const systemPrompt = resolveSystemPrompt(settings)
+  const systemPrompt = resolveSystemPrompt(settings, post.platform)
   const userPrompt = buildUserPrompt(post, settings.persona)
 
   // SKIP guard: hold output until we know the model isn't returning the SKIP

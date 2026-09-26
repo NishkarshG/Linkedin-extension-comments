@@ -1,8 +1,8 @@
-# InlineAI for LinkedIn
+# InlineAI for LinkedIn & X
 
-Open-source, bring-your-own-key Chrome extension that drafts genuinely personalised LinkedIn comments inline.
+Open-source, bring-your-own-key Chrome extension that drafts genuinely personalised LinkedIn comments and X (Twitter) replies inline.
 
-When you focus a LinkedIn comment box, a small **✦ Write with AI** pill appears next to it. Click it, and InlineAI reads the post, calls *your* chosen LLM with a carefully engineered LinkedIn skill prompt, and writes a thoughtful, post-specific comment straight into the box for you to review, edit, and post. It never posts for you.
+When you focus a LinkedIn comment box or an X reply box, a small **✦ Write with AI** pill appears next to it. Click it, and InlineAI reads the post, calls *your* chosen LLM with a carefully engineered skill prompt for that site, and writes a thoughtful, post-specific comment straight into the box for you to review, edit, and post. It never posts for you.
 
 ![InlineAI inline button, light theme](docs/inline-button-light.svg)
 ![InlineAI inline button, dark theme](docs/inline-button-dark.svg)
@@ -14,7 +14,7 @@ Most LinkedIn comment AI tools produce generic, obviously-AI comments ("Great po
 - **Truly open source** (MIT). Read every line, including the prompt.
 - **Bring-your-own-key.** You pay your provider directly. No subscriptions, no proxy, no markup.
 - **Privacy-first.** No backend. Your API key lives in `chrome.storage.local` and never leaves your device except to the provider you pick.
-- **Comment quality.** The whole product is the [LinkedIn skill prompt](src/skills/linkedin-skill.md): specific over generic, human over corporate, one sharp idea per comment.
+- **Comment quality.** The whole product is the skill prompts, one per site: the [LinkedIn skill](src/skills/linkedin-skill.md) and the [X skill](src/skills/x-skill.md). Specific over generic, human over corporate, one sharp idea per comment.
 
 ## Supported providers
 
@@ -41,14 +41,15 @@ Every provider also accepts a **custom model id**, because providers retire mode
 2. Open `chrome://extensions`, enable **Developer mode** (top-right).
 3. Click **Load unpacked** and select the generated `dist/` folder.
 4. The settings tab opens automatically. Pick a provider, click **Allow access** so the extension may contact that provider (it asks for that one host only), paste your API key, optionally fill in your persona, and hit **Test connection**.
-5. Go to your LinkedIn feed, focus any comment box, and click **✦ Write with AI** or press **Alt+Shift+W**.
+5. Go to your LinkedIn feed and focus any comment box, or open a post on X and focus the reply box. Click **✦ Write with AI** or press **Alt+Shift+W**.
 
 ### Using it
 
 * **Alt+Shift+W** in a comment box writes a comment. **Esc** (or typing in the box) cancels a comment that is still being written.
 * If the box already contains **your own draft**, InlineAI asks before replacing it.
 * When replying, the **@mention** LinkedIn adds for the person you reply to is kept.
-* Works on the feed, single posts, profiles, company, school, group, event and search pages. Never in messaging.
+* **LinkedIn:** works on the feed, single posts, profiles, company, school, group, event and search pages. Never in messaging.
+* **X:** works in the reply box under a post and in the reply dialog, on `x.com` and `twitter.com`. It stays out of the new-post box and direct messages. Replies are written in one go (not streamed), and a quoted post is passed along as context.
 
 ### Install (Chrome Web Store)
 
@@ -59,7 +60,7 @@ A Web Store listing is planned. Until then, use the load-unpacked steps above.
 InlineAI asks for as little as possible:
 
 * `storage`: to keep your settings on this device.
-* The LinkedIn content script runs only on `linkedin.com` pages.
+* The content script runs only on `linkedin.com`, `x.com` and `twitter.com` pages.
 * **One AI provider host, on demand.** Provider hosts are optional permissions. Chrome asks you when you pick a provider (or click **Allow access**), so you never grant access to AI services you do not use.
 
 The content script is intentionally **not** web accessible, so LinkedIn pages cannot probe for the extension's files to detect it.
@@ -74,20 +75,25 @@ Your key is written **only** to `chrome.storage.local` on this device. It is:
 
 The Gemini key is sent in the `x-goog-api-key` header, never in the URL.
 
-The options page has a **"What is sent to your AI provider"** section spelling out exactly what leaves your browser (the post's author name and headline, body text, hashtags, media type, a post type guess, the comment you are replying to when you reply, and your persona fields) and what never does (your full LinkedIn page, profile, or activity history). Post text is escaped and marked as untrusted in the prompt, so a post cannot smuggle instructions to the model.
+The options page has a **"What is sent to your AI provider"** section spelling out exactly what leaves your browser (the post's author name and headline, or display name and @handle on X; body text, hashtags, media type, a post type guess, the comment you are replying to when you reply, a quoted post on X, and your persona fields) and what never does (the full page, your profile, or your activity history). Post text is escaped and marked as untrusted in the prompt, so a post cannot smuggle instructions to the model.
 
-## Customising the skill prompt
+## Customising the skill prompts
 
-The [`src/skills/linkedin-skill.md`](src/skills/linkedin-skill.md) file is the system prompt and the heart of the product. You can:
+Each site has its own system prompt, and they are the heart of the product:
 
-- **View it** verbatim in the options page (with a copy button), so you always know what's being sent on your behalf.
-- **Override it** in the options page under *Advanced → Custom system prompt*. A **Reset to default** button restores the bundled skill at any time.
+- [`src/skills/linkedin-skill.md`](src/skills/linkedin-skill.md) for LinkedIn comments.
+- [`src/skills/x-skill.md`](src/skills/x-skill.md) for X replies (short, conversational, never over 280 characters).
+
+You can:
+
+- **View each one** verbatim in the options page (switch between LinkedIn and X, with a copy button), so you always know what's being sent on your behalf.
+- **Override each one separately** in the options page under *Advanced → Custom system prompt*. A **Reset to default** button restores the bundled skill at any time.
 
 If you improve the prompt, please open a PR — prompt changes are treated like product launches.
 
 ## How it works (architecture)
 
-- **Content script** (vanilla TS + Shadow DOM, no React, no zod) detects the comment box, renders the pill, extracts the post via resilient selectors, and inserts the result. Kept under a 30 KB gzipped budget (CI enforces it). Logging only happens when **Debug logging** is on.
+- **Content script** (vanilla TS + Shadow DOM, no React, no zod) detects the comment box, renders the pill, extracts the post via resilient selectors, and inserts the result. Site specifics live behind one small adapter per site ([`platform.ts`](src/content/platform.ts)): [`linkedin-dom.ts`](src/content/linkedin-dom.ts) and [`x-dom.ts`](src/content/x-dom.ts). X's composer is a Draft.js editor, so text goes in through a paste event (the only path that keeps Draft's own model, the Reply button and the character counter in sync). Kept under a 30 KB gzipped budget (CI enforces it). Logging only happens when **Debug logging** is on.
 - **Background service worker** does the cross-origin LLM call (it holds the provider host permission, which content scripts don't in MV3) and streams the comment back to the content script over a Port. Requests time out after 60 seconds, empty or cut off answers are reported instead of failing silently.
 - **Popup + options** (React + Tailwind) handle settings, with four hand-built UI primitives (Button, Input, Select, Toggle).
 - **LLM layer** is native `fetch` with a thin per-provider abstraction — no vendor SDKs, saving 500 KB+ of bundle weight.
@@ -112,12 +118,12 @@ Never commit a `.pem` file. `.gitignore` blocks `*.pem` and `*.key`. If a key wa
 
 1. Fork and create a feature branch.
 2. Run `pnpm lint && pnpm typecheck && pnpm test` before opening a PR.
-3. For DOM-selector fixes (LinkedIn changes often), edit the single `SELECTORS` object in [`src/content/linkedin-dom.ts`](src/content/linkedin-dom.ts) and note the date you verified it.
+3. For DOM-selector fixes (both sites change often), edit the single `SELECTORS` object in [`src/content/linkedin-dom.ts`](src/content/linkedin-dom.ts) or `X_SELECTORS` in [`src/content/x-dom.ts`](src/content/x-dom.ts) and note the date you verified it.
 4. For prompt changes, run a few post types through it first and describe what you tested.
 
 ## Roadmap (v2)
 
-- Multi-platform (X, Reddit) via per-platform skill files.
+- More platforms (Reddit) via per-platform skill files.
 - "Improve my draft" mode — rewrite a draft you already typed.
 - Regenerate-with-variation chip (shorter / sharper / add a question).
 - Selectable voices (contrarian / witty / supportive) per click.

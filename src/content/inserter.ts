@@ -1,9 +1,10 @@
 import { debugLog } from './linkedin-dom'
 
 // ===========================================================================
-// Inserting text into LinkedIn's React-controlled contenteditable comment box.
+// Inserting text into the comment box. LinkedIn (below) uses a React-controlled
+// contenteditable; X uses Draft.js, which needs its own path (replaceTextDraft).
 //
-// The reliable path is execCommand('insertText'): it fires the real
+// On LinkedIn the reliable path is execCommand('insertText'): it fires the real
 // beforeinput/input events LinkedIn's editor listens to, so React state stays
 // in sync and the Post button enables itself. We fall back to synthetic
 // InputEvents if execCommand is unavailable. We never click Post (spec F4).
@@ -143,6 +144,37 @@ export function replaceText(el: HTMLElement, text: string, anchor: Element | nul
   }
   dispatchInput(el, insert)
   return normalize(el.textContent).endsWith(normalize(text))
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
+}
+
+/**
+ * Replace everything in a Draft.js editor (X's composer) with `text`.
+ *
+ * Draft keeps its own model of the text. Editing its DOM directly, including
+ * execCommand('insertText') over a selection, desyncs that model and makes
+ * React throw and unmount the editor. Its paste handler is the one entry
+ * point that updates the model, so: select all, give Draft a frame to pick up
+ * the new selection, then dispatch a paste. The Reply button and character
+ * counter follow the model, so they update as if the user had pasted.
+ */
+export async function replaceTextDraft(el: HTMLElement, text: string): Promise<boolean> {
+  el.focus()
+  document.execCommand('selectAll')
+  await nextFrame()
+
+  const data = new DataTransfer()
+  data.setData('text/plain', text)
+  el.dispatchEvent(
+    new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+  )
+  await nextFrame()
+
+  const ok = normalize(el.textContent) === normalize(text)
+  if (!ok) debugLog('draft paste did not land; editor text:', el.textContent)
+  return ok
 }
 
 /**

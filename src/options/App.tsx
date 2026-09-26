@@ -1,4 +1,4 @@
-import { BUNDLED_SYSTEM_PROMPT } from '@/llm/prompt'
+import { BUNDLED_SKILLS, customPromptFor } from '@/llm/prompt'
 import { MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN } from '@/llm/types'
 import { ApiKeyInput } from '@/popup/components/ApiKeyInput'
 import { ModelSelect } from '@/popup/components/ModelSelect'
@@ -9,7 +9,7 @@ import { Input } from '@/popup/components/ui/Input'
 import { Toggle } from '@/popup/components/ui/Toggle'
 import { changeProvider } from '@/popup/useProviderChange'
 import { useSettings } from '@/popup/useSettings'
-import type { ProviderId } from '@/shared/types'
+import type { Platform, ProviderId } from '@/shared/types'
 import { REPO_URL } from '@/shared/types'
 import { resetSettings } from '@/storage/storage'
 import { Check, Copy, RotateCcw, Sparkles } from 'lucide-react'
@@ -49,6 +49,36 @@ function ToggleRow({
         <p className="text-xs leading-snug text-muted dark:text-muted-dark">{description}</p>
       </div>
       <Toggle checked={checked} onChange={onChange} label={label} />
+    </div>
+  )
+}
+
+const PLATFORM_LABELS: Record<Platform, string> = { linkedin: 'LinkedIn', x: 'X' }
+
+/** LinkedIn / X switch for the per-platform skill and custom prompt. */
+function PlatformTabs({ value, onChange }: { value: Platform; onChange: (p: Platform) => void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Platform"
+      className="inline-flex rounded border border-line dark:border-line-dark p-0.5"
+    >
+      {(Object.keys(PLATFORM_LABELS) as Platform[]).map((p) => (
+        <button
+          key={p}
+          type="button"
+          role="tab"
+          aria-selected={value === p}
+          onClick={() => onChange(p)}
+          className={`rounded px-3 py-1 text-xs font-medium ${
+            value === p
+              ? 'bg-accent/10 text-accent'
+              : 'text-muted hover:text-ink dark:text-muted-dark dark:hover:text-ink-dark'
+          }`}
+        >
+          {PLATFORM_LABELS[p]}
+        </button>
+      ))}
     </div>
   )
 }
@@ -116,12 +146,15 @@ function NumberField({
 export default function App() {
   const { settings, update } = useSettings()
   const [copied, setCopied] = useState(false)
+  const [platform, setPlatform] = useState<Platform>('linkedin')
 
-  const effectivePrompt = settings.customSystemPrompt.trim() || BUNDLED_SYSTEM_PROMPT
-  const usingCustom = settings.customSystemPrompt.trim().length > 0
+  const customPrompt = customPromptFor(settings, platform)
+  const customKey = platform === 'x' ? 'customSystemPromptX' : 'customSystemPrompt'
+  const effectivePrompt = customPrompt.trim() || BUNDLED_SKILLS[platform]
+  const usingCustom = customPrompt.trim().length > 0
 
   async function copySkill() {
-    await navigator.clipboard.writeText(BUNDLED_SYSTEM_PROMPT)
+    await navigator.clipboard.writeText(BUNDLED_SKILLS[platform])
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -140,12 +173,12 @@ export default function App() {
             <Sparkles size={18} />
           </span>
           <div>
-            <h1 className="text-xl font-semibold">InlineAI for LinkedIn</h1>
+            <h1 className="text-xl font-semibold">InlineAI for LinkedIn &amp; X</h1>
             <p className="text-sm text-muted dark:text-muted-dark">
               Settings · open-source · bring-your-own-key
             </p>
             <p className="text-xs text-muted dark:text-muted-dark">
-              Tip: press Alt+Shift+W in any LinkedIn comment box to write with AI.
+              Tip: press Alt+Shift+W in any LinkedIn comment box or X reply box to write with AI.
             </p>
           </div>
         </header>
@@ -218,14 +251,18 @@ export default function App() {
             </div>
 
             <div>
-              <div className="mb-1.5 flex items-center justify-between">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-muted dark:text-muted-dark">
-                  Custom system prompt {usingCustom ? '(active)' : '(using bundled skill)'}
+                  Custom system prompt for {PLATFORM_LABELS[platform]}{' '}
+                  {usingCustom ? '(active)' : '(using bundled skill)'}
                 </span>
+                <PlatformTabs value={platform} onChange={setPlatform} />
+              </div>
+              <div className="mb-1.5 flex justify-end">
                 {usingCustom && (
                   <button
                     type="button"
-                    onClick={() => update({ customSystemPrompt: '' })}
+                    onClick={() => update({ [customKey]: '' })}
                     className="flex items-center gap-1 text-xs text-accent hover:underline"
                   >
                     <RotateCcw size={12} /> Reset to default
@@ -234,9 +271,9 @@ export default function App() {
               </div>
               <textarea
                 rows={5}
-                value={settings.customSystemPrompt}
-                placeholder="Leave empty to use the bundled LinkedIn skill below."
-                onChange={(e) => update({ customSystemPrompt: e.target.value })}
+                value={customPrompt}
+                placeholder={`Leave empty to use the bundled ${PLATFORM_LABELS[platform]} skill below.`}
+                onChange={(e) => update({ [customKey]: e.target.value })}
                 className="w-full resize-y rounded bg-canvas dark:bg-canvas-dark text-ink dark:text-ink-dark border border-line dark:border-line-dark px-3 py-2 font-mono text-xs leading-relaxed focus:outline-none focus:border-accent"
               />
             </div>
@@ -247,8 +284,8 @@ export default function App() {
             description="Transparency matters. On each click we send only:"
           >
             <ul className="list-inside list-disc space-y-1 text-sm text-ink dark:text-ink-dark">
-              <li>The post author's display name and headline</li>
-              <li>The post body text and hashtags</li>
+              <li>The post author's display name and headline (on X: display name and @handle)</li>
+              <li>The post body text and hashtags (on X: plus the text of a quoted post)</li>
               <li>The post's media type (text, image, video, document, article, repost)</li>
               <li>A post type guess (for example “opinion” or “achievement”)</li>
               <li>When you reply to a comment: the text of that comment (up to 600 characters)</li>
@@ -256,19 +293,20 @@ export default function App() {
               <li>The system prompt shown below</li>
             </ul>
             <p className="text-sm text-muted dark:text-muted-dark">
-              We never send your full LinkedIn page, your profile, or your activity history.
+              We never send the full page, your profile, or your activity history.
             </p>
           </Section>
 
           <Section
-            title="The LinkedIn skill (system prompt)"
+            title={`The ${PLATFORM_LABELS[platform]} skill (system prompt)`}
             description={
               usingCustom
-                ? 'Your custom prompt is active. The bundled skill below is what InlineAI ships with.'
-                : 'This exact text is sent as the system prompt on every comment.'
+                ? `Your custom prompt is active on ${PLATFORM_LABELS[platform]}. The bundled skill below is what InlineAI ships with.`
+                : `This exact text is sent as the system prompt on every ${PLATFORM_LABELS[platform]} ${platform === 'x' ? 'reply' : 'comment'}.`
             }
           >
-            <div className="flex justify-end">
+            <div className="flex items-center justify-between">
+              <PlatformTabs value={platform} onChange={setPlatform} />
               <Button variant="secondary" onClick={copySkill} className="h-8 px-2.5 text-xs">
                 {copied ? (
                   <>

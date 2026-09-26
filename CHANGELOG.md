@@ -6,6 +6,19 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- X (Twitter) support on `x.com` and `twitter.com`: the pill appears in the reply box under a post and in the reply dialog, never in the new-post box or direct messages.
+- A dedicated X skill prompt (`src/skills/x-skill.md`): short, conversational replies that never exceed 280 characters.
+- A separate custom system prompt for X, and a LinkedIn / X switch for the skill viewer in the options page.
+- Quoted posts on X are passed to the model as context.
+
+### Changed
+
+- The extension is now named "InlineAI for LinkedIn & X".
+- Site specific code sits behind a small adapter (`src/content/platform.ts`), one per site.
+- Pressing Escape to cancel a comment no longer reaches the page (on X it used to also close the reply dialog).
+
 ### Fixed
 
 - Replying to a comment now reads the original post (author, headline, body). LinkedIn renders comments as `<article>` elements, so the reply's own comment was mistaken for the post and the model only saw that comment.

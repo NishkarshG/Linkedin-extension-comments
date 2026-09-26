@@ -1,4 +1,5 @@
-import { buildUserPrompt, escapeForPrompt } from '@/llm/prompt'
+import { BUNDLED_SKILLS, buildUserPrompt, escapeForPrompt, resolveSystemPrompt } from '@/llm/prompt'
+import { DEFAULT_SETTINGS } from '@/llm/types'
 import { couldBeSkipPrefix, isSkipResponse } from '@/shared/messages'
 import type { PostData } from '@/shared/types'
 import { describe, expect, it } from 'vitest'
@@ -6,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 const persona = { name: '', role: 'Designer', expertise: '', industry: '', voiceNotes: '' }
 
 const post = (body: string, extra: Partial<PostData> = {}): PostData => ({
+  platform: 'linkedin',
   author: 'Ann',
   authorHeadline: 'PM',
   body,
@@ -39,6 +41,36 @@ describe('buildUserPrompt', () => {
 
   it('escapes ampersands', () => {
     expect(escapeForPrompt('R&D <3')).toBe('R&amp;D &lt;3')
+  })
+
+  it('frames X posts as replies and leaves out the headline', () => {
+    const prompt = buildUserPrompt(
+      post('Shipped v1', { platform: 'x', author: 'Jo (@jo)' }),
+      persona,
+    )
+    expect(prompt).toContain('post on X')
+    expect(prompt).toContain('Write ONE reply')
+    expect(prompt).toContain('<author>Jo (@jo)</author>')
+    expect(prompt).not.toContain('<author_headline>')
+
+    const linkedin = buildUserPrompt(post('Shipped v1'), persona)
+    expect(linkedin).toContain('LinkedIn post')
+    expect(linkedin).toContain('<author_headline>PM</author_headline>')
+  })
+})
+
+describe('resolveSystemPrompt', () => {
+  it('uses the bundled skill for each platform', () => {
+    expect(resolveSystemPrompt(DEFAULT_SETTINGS, 'linkedin')).toBe(BUNDLED_SKILLS.linkedin)
+    expect(resolveSystemPrompt(DEFAULT_SETTINGS, 'x')).toBe(BUNDLED_SKILLS.x)
+    expect(BUNDLED_SKILLS.linkedin).toContain('LinkedIn Comment Skill')
+    expect(BUNDLED_SKILLS.x).toContain('X Reply Skill')
+  })
+
+  it('applies each custom prompt only to its own platform', () => {
+    const settings = { ...DEFAULT_SETTINGS, customSystemPromptX: 'Be brief.' }
+    expect(resolveSystemPrompt(settings, 'x')).toBe('Be brief.')
+    expect(resolveSystemPrompt(settings, 'linkedin')).toBe(BUNDLED_SKILLS.linkedin)
   })
 })
 

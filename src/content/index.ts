@@ -6,18 +6,8 @@ import {
 } from '@/shared/messages'
 import type { PostData } from '@/shared/types'
 import { InlineButton } from './button'
-import { activatePostButton, leadingEntity, replaceText, userDraftText } from './inserter'
-import {
-  commentInputFrom,
-  debugLog,
-  expandSeeMore,
-  extractPost,
-  findComposerScope,
-  findPostContainer,
-  isExtractable,
-  isInScope,
-  setDebug,
-} from './linkedin-dom'
+import { debugLog, isExtractable, setDebug } from './linkedin-dom'
+import { type PlatformAdapter, platformFor } from './platform'
 
 // Hardcoded here (not imported from storage.ts) so the content bundle never
 // pulls in zod — keeping it under the 30KB gzipped budget.
@@ -27,6 +17,9 @@ const SETTINGS_KEY = 'inlineai:settings'
 const STREAM_FLUSH_MS = 80
 /** Client side safety net, slightly longer than the worker's own 60s timeout. */
 const WATCHDOG_MS = 75_000
+
+/** LinkedIn or X, picked once at startup from the hostname (see init). */
+let platform: PlatformAdapter
 
 const button = new InlineButton()
 button.onClick(() => void handleClick())
@@ -77,8 +70,8 @@ function isDarkColor(color: string): boolean {
 // ---------------------------------------------------------------------------
 
 function onFocusIn(e: FocusEvent): void {
-  if (!isInScope()) return
-  const input = commentInputFrom(e.target)
+  if (!platform.isInScope()) return
+  const input = platform.commentInputFrom(e.target)
   if (!input) return
   showButtonFor(input)
 }
@@ -100,9 +93,9 @@ function onDocClick(e: MouseEvent): void {
   if (!current) return
   if (target && current.contains(target)) return
   // Stay visible if the click is in the post container OR the composer scope.
-  const container = findPostContainer(current)
+  const container = platform.findPostContainer(current)
   if (container && target && container.contains(target)) return
-  const scope = findComposerScope(current)
+  const scope = platform.findComposerScope(current)
   if (scope && target && scope.contains(target)) return
   button.hide()
 }
@@ -120,14 +113,21 @@ function onKeyDown(e: KeyboardEvent): void {
 
   if (session && button.getState() === 'loading') {
     const inTarget = e.target instanceof Node && session.target.contains(e.target)
-    if (e.key === 'Escape' || (inTarget && !isModifierOnly(e) && !isShortcut(e))) {
-      cancelGeneration(e.key === 'Escape' ? 'Cancelled' : 'Stopped because you started typing')
+    if (e.key === 'Escape') {
+      // Keep the page from also handling it (X closes the reply dialog on Escape).
+      e.preventDefault()
+      e.stopPropagation()
+      cancelGeneration('Cancelled')
+      return
+    }
+    if (inTarget && !isModifierOnly(e) && !isShortcut(e)) {
+      cancelGeneration('Stopped because you started typing')
       return
     }
   }
 
-  if (!isShortcut(e) || !isInScope()) return
-  const input = commentInputFrom(e.target)
+  if (!isShortcut(e) || !platform.isInScope()) return
+  const input = platform.commentInputFrom(e.target)
   if (!input) return
   e.preventDefault()
   e.stopPropagation()
@@ -170,7 +170,7 @@ async function handleClick(): Promise<void> {
   }
 
   // Never silently overwrite something the user typed themselves.
-  const draft = userDraftText(target)
+  const draft = platform.draftText(target)
   const ours = lastInserted.get(target)
   if (draft.length > 0 && draft !== normalizeText(ours)) {
     if (!window.confirm('Replace your draft with an AI comment?')) return
@@ -181,15 +181,15 @@ async function handleClick(): Promise<void> {
     const flags = await readContentFlags()
     setDebug(flags.debug)
 
-    const container = findPostContainer(target)
+    const container = platform.findPostContainer(target)
     if (!container) {
       button.showError("Couldn't read the post. Please report this")
       return
     }
     if (flags.autoExpandSeeMore) {
-      await expandSeeMore(container)
+      await platform.expandSeeMore(container)
     }
-    const post = extractPost(target, container)
+    const post = platform.extractPost(target, container)
     debugLog('extracted post data:', post)
 
     if (!isExtractable(post)) {
@@ -215,7 +215,7 @@ function startGeneration(target: HTMLElement, post: PostData): void {
   const current: Session = {
     port,
     target,
-    anchor: leadingEntity(target),
+    anchor: platform.anchor(target),
     accumulated: '',
     flushTimer: null,
     watchdog: window.setTimeout(() => {
@@ -238,13 +238,7 @@ function startGeneration(target: HTMLElement, post: PostData): void {
       }
       case 'done': {
         endSession(false)
-        replaceText(current.target, msg.text, current.anchor)
-        lastInserted.set(current.target, msg.text)
-        activatePostButton(current.target)
-        button.flashSuccess()
-        if (msg.truncated) {
-          button.showInfo('The comment was cut off. Raise "Max output length" in settings.', 5000)
-        }
+        void writeFinal(current, msg.text, msg.truncated)
         break
       }
       case 'skip': {
@@ -279,19 +273,33 @@ function startGeneration(target: HTMLElement, post: PostData): void {
   port.postMessage(startMsg)
 }
 
+async function writeFinal(current: Session, text: string, truncated: boolean): Promise<void> {
+  const ok = await platform.write(current.target, text, current.anchor)
+  if (!ok) {
+    button.showError("Couldn't type into the box. Please report this")
+    return
+  }
+  lastInserted.set(current.target, text)
+  platform.afterWrite(current.target)
+  button.flashSuccess()
+  if (truncated) {
+    button.showInfo('The comment was cut off. Raise "Max output length" in settings.', 5000)
+  }
+}
+
 /**
  * Coalesce streamed tokens into one DOM write per STREAM_FLUSH_MS, and only
  * while the user is still in that comment box, so streaming never steals focus.
  */
 function scheduleFlush(current: Session): void {
-  if (current.flushTimer !== null) return
+  if (!platform.streamsIntoBox || current.flushTimer !== null) return
   current.flushTimer = window.setTimeout(() => {
     current.flushTimer = null
     if (session !== current) return
     const active = document.activeElement
     if (active && (active === current.target || current.target.contains(active))) {
       const partial = current.accumulated.trimStart()
-      replaceText(current.target, partial, current.anchor)
+      void platform.write(current.target, partial, current.anchor)
       lastInserted.set(current.target, partial)
     }
   }, STREAM_FLUSH_MS)
@@ -349,7 +357,7 @@ function onDomChange(): void {
   // SPA navigation: hide the button if we left a commentable page.
   if (location.href !== lastUrl) {
     lastUrl = location.href
-    if (!isInScope() && button.getState() !== 'loading') button.hide()
+    if (!platform.isInScope() && button.getState() !== 'loading') button.hide()
   }
   if (!button.isVisible()) return
   const target = button.getTarget()
@@ -384,13 +392,14 @@ function throttle(fn: () => void, ms: number): () => void {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-function init(): void {
+function init(adapter: PlatformAdapter): void {
+  platform = adapter
   document.addEventListener('focusin', onFocusIn, true)
   document.addEventListener('click', onDocClick, true)
   document.addEventListener('keydown', onKeyDown, true)
 
   // Structure changes only (navigation, removed composers). Attribute changes
-  // across LinkedIn's whole tree fire constantly and are not needed here.
+  // across the site's whole tree fire constantly and are not needed here.
   new MutationObserver(throttle(onDomChange, 150)).observe(document.body, {
     childList: true,
     subtree: true,
@@ -402,7 +411,9 @@ function init(): void {
   themeObserver.observe(document.documentElement, themeAttrs)
   themeObserver.observe(document.body, themeAttrs)
 
-  debugLog('InlineAI content script ready')
+  debugLog(`InlineAI content script ready on ${adapter.id}`)
 }
 
-init()
+// The manifest only injects this script on LinkedIn and X.
+const detected = platformFor(location.hostname)
+if (detected) init(detected)

@@ -35,7 +35,7 @@ export default function App() {
         <div className="leading-tight">
           <h1 className="text-base font-semibold">InlineAI</h1>
           <p className="text-xs text-muted dark:text-muted-dark">
-            Personalised LinkedIn comments · BYO key
+            Personalised LinkedIn & X replies · BYO key
           </p>
         </div>
         <button
