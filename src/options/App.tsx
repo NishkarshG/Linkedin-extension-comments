@@ -1,4 +1,5 @@
 import { BUNDLED_SYSTEM_PROMPT } from '@/llm/prompt'
+import { MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN } from '@/llm/types'
 import { ApiKeyInput } from '@/popup/components/ApiKeyInput'
 import { ModelSelect } from '@/popup/components/ModelSelect'
 import { PersonaCard } from '@/popup/components/PersonaCard'
@@ -6,12 +7,13 @@ import { ProviderSelect } from '@/popup/components/ProviderSelect'
 import { Button } from '@/popup/components/ui/Button'
 import { Input } from '@/popup/components/ui/Input'
 import { Toggle } from '@/popup/components/ui/Toggle'
+import { changeProvider } from '@/popup/useProviderChange'
 import { useSettings } from '@/popup/useSettings'
 import type { ProviderId } from '@/shared/types'
 import { REPO_URL } from '@/shared/types'
 import { resetSettings } from '@/storage/storage'
 import { Check, Copy, RotateCcw, Sparkles } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 function Section({
   title,
@@ -51,6 +53,66 @@ function ToggleRow({
   )
 }
 
+/**
+ * A number input that keeps its own draft text and only saves a valid,
+ * clamped value on blur or Enter, so typing "5" on the way to "50" is not
+ * instantly clamped to the minimum.
+ */
+function NumberField({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  step,
+  integer = false,
+  onCommit,
+}: {
+  label: string
+  hint?: string
+  value: number
+  min: number
+  max: number
+  step: number
+  integer?: boolean
+  onCommit: (v: number) => void
+}) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+
+  function commit() {
+    const n = integer ? Number.parseInt(draft, 10) : Number.parseFloat(draft)
+    if (Number.isNaN(n)) {
+      setDraft(String(value))
+      return
+    }
+    const clamped = Math.min(max, Math.max(min, n))
+    setDraft(String(clamped))
+    if (clamped !== value) onCommit(clamped)
+  }
+
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-medium text-muted dark:text-muted-dark">
+        {label}
+      </span>
+      <Input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+        }}
+      />
+      {hint && <span className="mt-1 block text-xs text-muted dark:text-muted-dark">{hint}</span>}
+    </label>
+  )
+}
+
 export default function App() {
   const { settings, update } = useSettings()
   const [copied, setCopied] = useState(false)
@@ -82,6 +144,9 @@ export default function App() {
             <p className="text-sm text-muted dark:text-muted-dark">
               Settings · open-source · bring-your-own-key
             </p>
+            <p className="text-xs text-muted dark:text-muted-dark">
+              Tip: press Alt+Shift+W in any LinkedIn comment box to write with AI.
+            </p>
           </div>
         </header>
 
@@ -92,7 +157,7 @@ export default function App() {
           >
             <ProviderSelect
               value={settings.providerId}
-              onChange={(providerId: ProviderId) => update({ providerId, model: '' })}
+              onChange={(providerId: ProviderId) => changeProvider(settings, update, providerId)}
             />
             <ModelSelect
               provider={settings.providerId}
@@ -131,21 +196,26 @@ export default function App() {
               checked={settings.debug}
               onChange={(debug) => update({ debug })}
             />
-            <label className="block max-w-[200px]">
-              <span className="mb-1.5 block text-xs font-medium text-muted dark:text-muted-dark">
-                Max output length (tokens)
-              </span>
-              <Input
-                type="number"
-                min={20}
-                max={2000}
+            <div className="grid grid-cols-2 gap-4">
+              <NumberField
+                label="Max output length (tokens)"
                 value={settings.maxOutputTokens}
-                onChange={(e) => {
-                  const n = Number.parseInt(e.target.value, 10)
-                  if (!Number.isNaN(n)) update({ maxOutputTokens: Math.min(2000, Math.max(20, n)) })
-                }}
+                min={MAX_OUTPUT_TOKENS_MIN}
+                max={MAX_OUTPUT_TOKENS_MAX}
+                step={10}
+                integer
+                onCommit={(maxOutputTokens) => update({ maxOutputTokens })}
               />
-            </label>
+              <NumberField
+                label="Creativity (temperature)"
+                hint="Ignored by reasoning models."
+                value={settings.temperature}
+                min={0}
+                max={2}
+                step={0.1}
+                onCommit={(temperature) => update({ temperature })}
+              />
+            </div>
 
             <div>
               <div className="mb-1.5 flex items-center justify-between">
@@ -179,7 +249,9 @@ export default function App() {
             <ul className="list-inside list-disc space-y-1 text-sm text-ink dark:text-ink-dark">
               <li>The post author's display name and headline</li>
               <li>The post body text and hashtags</li>
-              <li>A post-type heuristic (e.g. “opinion”, “achievement”)</li>
+              <li>The post's media type (text, image, video, document, article, repost)</li>
+              <li>A post type guess (for example “opinion” or “achievement”)</li>
+              <li>When you reply to a comment: the text of that comment (up to 600 characters)</li>
               <li>Your persona fields (only what you typed above)</li>
               <li>The system prompt shown below</li>
             </ul>

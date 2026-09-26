@@ -1,6 +1,6 @@
 {
   "name": "inlineai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "InlineAI for LinkedIn - open-source, bring-your-own-key Chrome extension that drafts genuinely personalised LinkedIn comments inline.",
   "license": "MIT",
   "type": "module",

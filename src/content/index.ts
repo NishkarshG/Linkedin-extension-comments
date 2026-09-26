@@ -6,7 +6,7 @@ import {
 } from '@/shared/messages'
 import type { PostData } from '@/shared/types'
 import { InlineButton } from './button'
-import { activatePostButton, replaceText } from './inserter'
+import { activatePostButton, leadingEntity, replaceText, userDraftText } from './inserter'
 import {
   commentInputFrom,
   debugLog,
@@ -15,6 +15,7 @@ import {
   findComposerScope,
   findPostContainer,
   isExtractable,
+  isInScope,
   setDebug,
 } from './linkedin-dom'
 
@@ -22,28 +23,33 @@ import {
 // pulls in zod — keeping it under the 30KB gzipped budget.
 const SETTINGS_KEY = 'inlineai:settings'
 
-const button = new InlineButton()
-button.onClick(handleClick)
+/** Streamed text is written to the box at most this often (ms). */
+const STREAM_FLUSH_MS = 80
+/** Client side safety net, slightly longer than the worker's own 60s timeout. */
+const WATCHDOG_MS = 75_000
 
-let currentPort: chrome.runtime.Port | null = null
-let accumulated = ''
+const button = new InlineButton()
+button.onClick(() => void handleClick())
+
+/** One in-flight generation. */
+interface Session {
+  port: chrome.runtime.Port
+  target: HTMLElement
+  /** Leading @mention to keep in front of the generated text. */
+  anchor: Element | null
+  accumulated: string
+  flushTimer: number | null
+  watchdog: number
+}
+
+let session: Session | null = null
 let lastUrl = location.href
+/** The comment we last wrote into each box, so "regenerate" never asks to confirm. */
+const lastInserted = new WeakMap<HTMLElement, string>()
 
 // ---------------------------------------------------------------------------
 // Scope + theme
 // ---------------------------------------------------------------------------
-
-function isInScope(): boolean {
-  const p = location.pathname
-  if (p.startsWith('/messaging')) return false
-  return (
-    p.startsWith('/feed') ||
-    p.includes('/posts/') ||
-    p.includes('/pulse/') ||
-    p.includes('/feed/update/') ||
-    p.startsWith('/in/')
-  )
-}
 
 function detectDarkMode(): boolean {
   const html = document.documentElement
@@ -102,8 +108,51 @@ function onDocClick(e: MouseEvent): void {
 }
 
 // ---------------------------------------------------------------------------
+// Keyboard: Alt+Shift+W writes, Escape or typing cancels a running generation
+// ---------------------------------------------------------------------------
+
+function isShortcut(e: KeyboardEvent): boolean {
+  return e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyW'
+}
+
+function onKeyDown(e: KeyboardEvent): void {
+  if (!e.isTrusted) return
+
+  if (session && button.getState() === 'loading') {
+    const inTarget = e.target instanceof Node && session.target.contains(e.target)
+    if (e.key === 'Escape' || (inTarget && !isModifierOnly(e) && !isShortcut(e))) {
+      cancelGeneration(e.key === 'Escape' ? 'Cancelled' : 'Stopped because you started typing')
+      return
+    }
+  }
+
+  if (!isShortcut(e) || !isInScope()) return
+  const input = commentInputFrom(e.target)
+  if (!input) return
+  e.preventDefault()
+  e.stopPropagation()
+  showButtonFor(input)
+  void handleClick()
+}
+
+function isModifierOnly(e: KeyboardEvent): boolean {
+  return ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)
+}
+
+// ---------------------------------------------------------------------------
 // Generation flow
 // ---------------------------------------------------------------------------
+
+/** True when the extension was reloaded or updated and this page still runs the old script. */
+function extensionContextLost(): boolean {
+  try {
+    return !chrome.runtime?.id
+  } catch {
+    return true
+  }
+}
+
+const RELOAD_MESSAGE = 'InlineAI was updated. Refresh this page to use it.'
 
 async function handleClick(): Promise<void> {
   const target = button.getTarget()
@@ -111,115 +160,168 @@ async function handleClick(): Promise<void> {
 
   // Clicking while writing cancels the in-flight request (spec F1 loading state).
   if (button.getState() === 'loading') {
-    abortGeneration()
-    button.setState('default')
+    cancelGeneration()
     return
   }
 
-  const container = findPostContainer(target)
-  if (!container) {
-    button.showError("Couldn't read the post — please report this")
+  if (extensionContextLost()) {
+    button.showError(RELOAD_MESSAGE)
     return
+  }
+
+  // Never silently overwrite something the user typed themselves.
+  const draft = userDraftText(target)
+  const ours = lastInserted.get(target)
+  if (draft.length > 0 && draft !== normalizeText(ours)) {
+    if (!window.confirm('Replace your draft with an AI comment?')) return
   }
 
   button.setState('loading')
   try {
     const flags = await readContentFlags()
     setDebug(flags.debug)
+
+    const container = findPostContainer(target)
+    if (!container) {
+      button.showError("Couldn't read the post. Please report this")
+      return
+    }
     if (flags.autoExpandSeeMore) {
       await expandSeeMore(container)
     }
     const post = extractPost(target, container)
-    console.log('[InlineAI] extracted post data:', post)
+    debugLog('extracted post data:', post)
 
     if (!isExtractable(post)) {
-      console.warn('[InlineAI] post data is not extractable (all fields empty)')
-      button.showError("Couldn't read the post — please report this")
+      debugLog('post data is not extractable (all fields empty)')
+      button.showError("Couldn't read the post. Please report this")
       return
     }
-    accumulated = ''
     startGeneration(target, post)
   } catch (err) {
-    console.error('[InlineAI] handleClick error:', err)
-    button.showError('Something went wrong. Try again.')
+    debugLog('handleClick error:', err)
+    button.showError(extensionContextLost() ? RELOAD_MESSAGE : 'Something went wrong. Try again.')
   }
 }
 
+function normalizeText(text: string | undefined): string {
+  return (text ?? '').replace(/\s+/g, ' ').trim()
+}
+
 function startGeneration(target: HTMLElement, post: PostData): void {
-  abortGeneration() // never run two requests at once
+  endSession(true) // never run two requests at once
 
   const port = chrome.runtime.connect({ name: GENERATE_PORT })
-  currentPort = port
+  const current: Session = {
+    port,
+    target,
+    anchor: leadingEntity(target),
+    accumulated: '',
+    flushTimer: null,
+    watchdog: window.setTimeout(() => {
+      if (session === current) {
+        endSession(true)
+        button.showError('The AI provider took too long. Try again.')
+      }
+    }, WATCHDOG_MS),
+  }
+  session = current
 
   port.onMessage.addListener((raw: unknown) => {
+    if (session !== current) return
     const msg = raw as GeneratePortResponse
     switch (msg.type) {
       case 'chunk': {
-        accumulated += msg.delta
-        replaceText(target, accumulated)
+        current.accumulated += msg.delta
+        scheduleFlush(current)
         break
       }
       case 'done': {
-        accumulated = msg.text
-        if (msg.text.length > 0) {
-          replaceText(target, msg.text)
-          activatePostButton(target)
-        }
-        teardownPort()
+        endSession(false)
+        replaceText(current.target, msg.text, current.anchor)
+        lastInserted.set(current.target, msg.text)
+        activatePostButton(current.target)
         button.flashSuccess()
+        if (msg.truncated) {
+          button.showInfo('The comment was cut off. Raise "Max output length" in settings.', 5000)
+        }
         break
       }
       case 'skip': {
-        teardownPort()
+        endSession(false)
         button.setState('default')
         button.showInfo('Not worth a comment')
         break
       }
       case 'error': {
-        teardownPort()
-        if (msg.code === 'no_api_key') {
-          button.showError('Add your API key in InlineAI settings')
-          chrome.runtime.sendMessage({ type: 'OPEN_SETTINGS' } satisfies RuntimeMessage)
-        } else {
-          button.showError(msg.message)
+        endSession(false)
+        button.showError(msg.message)
+        if (msg.code === 'no_api_key' || msg.code === 'no_permission') {
+          chrome.runtime
+            .sendMessage({ type: 'OPEN_SETTINGS' } satisfies RuntimeMessage)
+            .catch(() => {})
         }
         break
       }
     }
   })
 
+  // Fires only when the WORKER side goes away (crash, update, reload).
   port.onDisconnect.addListener(() => {
-    if (currentPort === port) currentPort = null
+    if (session !== current) return
+    endSession(false)
+    button.showError(
+      extensionContextLost() ? RELOAD_MESSAGE : 'Lost connection to InlineAI. Try again.',
+    )
   })
 
   const startMsg: GeneratePortRequest = { type: 'start', post }
   port.postMessage(startMsg)
 }
 
-function abortGeneration(): void {
-  if (!currentPort) return
-  try {
-    const abortMsg: GeneratePortRequest = { type: 'abort' }
-    currentPort.postMessage(abortMsg)
-  } catch {
-    /* port may already be closed */
-  }
-  try {
-    currentPort.disconnect()
-  } catch {
-    /* ignore */
-  }
-  currentPort = null
+/**
+ * Coalesce streamed tokens into one DOM write per STREAM_FLUSH_MS, and only
+ * while the user is still in that comment box, so streaming never steals focus.
+ */
+function scheduleFlush(current: Session): void {
+  if (current.flushTimer !== null) return
+  current.flushTimer = window.setTimeout(() => {
+    current.flushTimer = null
+    if (session !== current) return
+    const active = document.activeElement
+    if (active && (active === current.target || current.target.contains(active))) {
+      const partial = current.accumulated.trimStart()
+      replaceText(current.target, partial, current.anchor)
+      lastInserted.set(current.target, partial)
+    }
+  }, STREAM_FLUSH_MS)
 }
 
-function teardownPort(): void {
-  if (currentPort) {
+function cancelGeneration(reason?: string): void {
+  endSession(true)
+  button.setState('default')
+  if (reason) button.showInfo(reason)
+}
+
+/** Tear down the current session. `abort` tells the worker to stop the request. */
+function endSession(abort: boolean): void {
+  const current = session
+  if (!current) return
+  session = null
+  if (current.flushTimer !== null) clearTimeout(current.flushTimer)
+  clearTimeout(current.watchdog)
+  if (abort) {
     try {
-      currentPort.disconnect()
+      const abortMsg: GeneratePortRequest = { type: 'abort' }
+      current.port.postMessage(abortMsg)
     } catch {
-      /* ignore */
+      /* port may already be closed */
     }
-    currentPort = null
+  }
+  try {
+    current.port.disconnect()
+  } catch {
+    /* ignore */
   }
 }
 
@@ -243,33 +345,39 @@ async function readContentFlags(): Promise<{ autoExpandSeeMore: boolean; debug: 
 // Observation (SPA navigation, theme changes, detached targets)
 // ---------------------------------------------------------------------------
 
-function onMutations(): void {
-  const work = (): void => {
-    // SPA navigation: hide the button if we left a commentable page.
-    if (location.href !== lastUrl) {
-      lastUrl = location.href
-      if (!isInScope()) button.hide()
-    }
-    if (!button.isVisible()) return
-    button.setTheme(detectDarkMode())
-    const target = button.getTarget()
-    if (target && !target.isConnected && button.getState() !== 'loading') {
-      button.hide()
-    }
+function onDomChange(): void {
+  // SPA navigation: hide the button if we left a commentable page.
+  if (location.href !== lastUrl) {
+    lastUrl = location.href
+    if (!isInScope() && button.getState() !== 'loading') button.hide()
   }
-  if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(work, { timeout: 200 })
-  } else {
-    work()
+  if (!button.isVisible()) return
+  const target = button.getTarget()
+  if (target && !target.isConnected && button.getState() !== 'loading') {
+    button.hide()
   }
 }
 
-function debounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
+function onThemeChange(): void {
+  if (button.isVisible()) button.setTheme(detectDarkMode())
+}
+
+/**
+ * Run `fn` at most once per `ms`, always including a trailing call. Unlike a
+ * debounce, a page that never stops mutating cannot starve it.
+ */
+function throttle(fn: () => void, ms: number): () => void {
   let timer: number | null = null
-  return ((...args: never[]) => {
-    if (timer) clearTimeout(timer)
-    timer = window.setTimeout(() => fn(...args), ms)
-  }) as T
+  let last = 0
+  return () => {
+    if (timer !== null) return
+    const wait = Math.max(0, last + ms - Date.now())
+    timer = window.setTimeout(() => {
+      timer = null
+      last = Date.now()
+      fn()
+    }, wait)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,14 +387,20 @@ function debounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
 function init(): void {
   document.addEventListener('focusin', onFocusIn, true)
   document.addEventListener('click', onDocClick, true)
+  document.addEventListener('keydown', onKeyDown, true)
 
-  const observer = new MutationObserver(debounce(onMutations, 50))
-  observer.observe(document.body, {
+  // Structure changes only (navigation, removed composers). Attribute changes
+  // across LinkedIn's whole tree fire constantly and are not needed here.
+  new MutationObserver(throttle(onDomChange, 150)).observe(document.body, {
     childList: true,
     subtree: true,
-    attributes: true,
-    attributeFilter: ['contenteditable', 'aria-label', 'data-theme', 'class'],
   })
+
+  // Theme lives on <html>/<body> only.
+  const themeObserver = new MutationObserver(throttle(onThemeChange, 150))
+  const themeAttrs = { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }
+  themeObserver.observe(document.documentElement, themeAttrs)
+  themeObserver.observe(document.body, themeAttrs)
 
   debugLog('InlineAI content script ready')
 }

@@ -1,3 +1,4 @@
+import { PROVIDERS, resolveModel } from '@/llm/types'
 import { getSettings, maskApiKey, resetSettings, setSettings } from '@/storage/storage'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -40,11 +41,37 @@ describe('storage', () => {
   })
 
   it('round-trips a settings patch', async () => {
-    await setSettings({ providerId: 'groq', apiKey: 'sk-xyz', model: 'llama-3.1-8b-instant' })
+    await setSettings({ providerId: 'groq', apiKey: 'sk-xyz', model: 'openai/gpt-oss-20b' })
     const s = await getSettings()
     expect(s.providerId).toBe('groq')
     expect(s.apiKey).toBe('sk-xyz')
-    expect(s.model).toBe('llama-3.1-8b-instant')
+    expect(s.model).toBe('openai/gpt-oss-20b')
+  })
+
+  it('keeps the API key when another stored field is invalid', async () => {
+    const store = installChromeMock()
+    store['inlineai:settings'] = { apiKey: 'sk-keep', maxOutputTokens: 99999, providerId: 'nope' }
+    const s = await getSettings()
+    expect(s.apiKey).toBe('sk-keep')
+    expect(s.maxOutputTokens).toBe(200)
+    expect(s.providerId).toBe('openai')
+  })
+
+  it('never loses a field when two writes race', async () => {
+    await Promise.all([setSettings({ apiKey: 'sk-a' }), setSettings({ model: 'gpt-5.5' })])
+    const s = await getSettings()
+    expect(s.apiKey).toBe('sk-a')
+    expect(s.model).toBe('gpt-5.5')
+  })
+
+  it('falls back from retired models to the provider default', () => {
+    expect(resolveModel({ providerId: 'google', model: 'gemini-1.5-flash' })).toBe(
+      PROVIDERS.google.defaultModel,
+    )
+    expect(resolveModel({ providerId: 'groq', model: 'llama-3.3-70b-versatile' })).toBe(
+      PROVIDERS.groq.defaultModel,
+    )
+    expect(resolveModel({ providerId: 'openai', model: 'my-fine-tune' })).toBe('my-fine-tune')
   })
 
   it('deep-merges the persona across patches', async () => {

@@ -1,5 +1,6 @@
 import { getProvider } from '@/llm/factory'
-import { buildUserPrompt, effectiveTemperature, resolveSystemPrompt } from '@/llm/prompt'
+import { hasHostAccess, providerHost } from '@/llm/permissions'
+import { buildUserPrompt, resolveSystemPrompt } from '@/llm/prompt'
 import { LlmError, PROVIDERS } from '@/llm/types'
 import {
   GENERATE_PORT,
@@ -7,10 +8,14 @@ import {
   type GeneratePortResponse,
   type RuntimeMessage,
   type RuntimeResponse,
-  SKIP_TOKEN,
+  couldBeSkipPrefix,
+  isSkipResponse,
 } from '@/shared/messages'
 import type { PostData } from '@/shared/types'
 import { getSettings } from '@/storage/storage'
+
+/** A request that has not finished after this long is cancelled with a clear error. */
+export const GENERATION_TIMEOUT_MS = 60_000
 
 // ---------------------------------------------------------------------------
 // Generation: content script connects a port, we stream the comment back.
@@ -20,6 +25,11 @@ import { getSettings } from '@/storage/storage'
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== GENERATE_PORT) return
+  // Only our own content scripts (running in a tab) may start generations.
+  if (port.sender?.id !== chrome.runtime.id) {
+    port.disconnect()
+    return
+  }
 
   const controller = new AbortController()
   let started = false
@@ -41,7 +51,7 @@ chrome.runtime.onConnect.addListener((port) => {
     if (msg.type === 'start') {
       if (started) return
       started = true
-      void runGeneration(msg.post, controller.signal, send)
+      void runGeneration(msg.post, controller, send)
     }
   })
 
@@ -50,9 +60,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
 async function runGeneration(
   post: PostData,
-  signal: AbortSignal,
+  controller: AbortController,
   send: (msg: GeneratePortResponse) => void,
 ): Promise<void> {
+  const signal = controller.signal
   const settings = await getSettings()
   const meta = PROVIDERS[settings.providerId]
 
@@ -61,9 +72,17 @@ async function runGeneration(
     return
   }
 
+  if (!(await hasHostAccess(settings))) {
+    send({
+      type: 'error',
+      code: 'no_permission',
+      message: `Allow InlineAI to reach ${providerHost(settings)} in settings.`,
+    })
+    return
+  }
+
   const systemPrompt = resolveSystemPrompt(settings)
   const userPrompt = buildUserPrompt(post, settings.persona)
-  const temperature = effectiveTemperature(post, settings.temperature)
 
   // SKIP guard: hold output until we know the model isn't returning the SKIP
   // sentinel, so we never flash "SKIP" into the comment box.
@@ -75,8 +94,7 @@ async function runGeneration(
     ? (delta: string): void => {
         acc += delta
         if (!gateOpen) {
-          const t = acc.trim().toUpperCase()
-          if (t.length <= SKIP_TOKEN.length && SKIP_TOKEN.startsWith(t)) return
+          if (couldBeSkipPrefix(acc)) return
           gateOpen = true
         }
         if (acc.length > forwarded) {
@@ -86,16 +104,44 @@ async function runGeneration(
       }
     : undefined
 
-  try {
-    const provider = getProvider(settings, { onToken, temperature })
-    const text = (await provider.generateComment({ systemPrompt, userPrompt, signal })).trim()
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('Generation timed out', 'TimeoutError')),
+    GENERATION_TIMEOUT_MS,
+  )
 
-    if (text.toUpperCase() === SKIP_TOKEN) {
+  try {
+    const provider = getProvider(settings, { onToken })
+    const { text, truncated } = await provider.generateComment({
+      systemPrompt,
+      userPrompt,
+      signal,
+    })
+
+    if (isSkipResponse(text)) {
       send({ type: 'skip' })
       return
     }
-    send({ type: 'done', text })
+    if (text.length === 0) {
+      send({
+        type: 'error',
+        code: 'empty_output',
+        message: truncated
+          ? 'The model used its whole output budget before writing. Raise "Max output length" in settings.'
+          : 'The model returned an empty comment. Try again or pick another model.',
+      })
+      return
+    }
+    send({ type: 'done', text, truncated })
   } catch (err) {
+    const timedOut = signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
+    if (timedOut) {
+      send({
+        type: 'error',
+        code: 'timeout',
+        message: `${meta.displayName} took too long to respond. Try again.`,
+      })
+      return
+    }
     if (signal.aborted) return
     if (err instanceof LlmError) {
       if (err.code === 'aborted') return
@@ -103,6 +149,8 @@ async function runGeneration(
     } else {
       send({ type: 'error', code: 'unknown', message: 'Something went wrong. Try again.' })
     }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -111,16 +159,17 @@ async function runGeneration(
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener(
-  (raw: unknown, _sender, sendResponse: (r: RuntimeResponse) => void) => {
+  (raw: unknown, sender, sendResponse: (r: RuntimeResponse) => void) => {
+    if (sender.id !== chrome.runtime.id) return false
     const msg = raw as RuntimeMessage
     if (msg.type === 'OPEN_SETTINGS') {
-      chrome.runtime.openOptionsPage()
+      void chrome.runtime.openOptionsPage()
       sendResponse({ ok: true })
-      return true
+      return false
     }
     if (msg.type === 'PING') {
       sendResponse({ ok: true })
-      return true
+      return false
     }
     return false
   },
@@ -132,6 +181,6 @@ chrome.runtime.onMessage.addListener(
 
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
-    chrome.runtime.openOptionsPage()
+    void chrome.runtime.openOptionsPage()
   }
 })

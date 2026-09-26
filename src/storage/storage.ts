@@ -16,16 +16,29 @@ export async function getSettings(): Promise<Settings> {
   }
 }
 
-/** Merge a partial patch into stored settings (deep-merging persona) and persist. */
-export async function setSettings(patch: SettingsPatch): Promise<Settings> {
-  const current = await getSettings()
-  const next = SettingsSchema.parse({
+/** Apply a patch to a settings object (deep-merging persona). Pure. */
+export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
+  return SettingsSchema.parse({
     ...current,
     ...patch,
     persona: { ...current.persona, ...(patch.persona ?? {}) },
   })
-  await chrome.storage.local.set({ [STORAGE_KEY]: next })
-  return next
+}
+
+// Writes are serialised: each one reads the result of the previous one, so two
+// quick edits (typing in two fields) can never overwrite each other.
+let writeQueue: Promise<unknown> = Promise.resolve()
+
+/** Merge a partial patch into stored settings (deep-merging persona) and persist. */
+export function setSettings(patch: SettingsPatch): Promise<Settings> {
+  const run = async (): Promise<Settings> => {
+    const next = mergeSettings(await getSettings(), patch)
+    await chrome.storage.local.set({ [STORAGE_KEY]: next })
+    return next
+  }
+  const result = writeQueue.then(run, run)
+  writeQueue = result.catch(() => undefined)
+  return result
 }
 
 /** Remove all stored settings (the options page "Reset all settings" action). */

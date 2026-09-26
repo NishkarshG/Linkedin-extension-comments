@@ -1,7 +1,8 @@
+import { hasHostAccess, providerHost, requestHostAccess } from '@/llm/permissions'
 import { testConnection } from '@/llm/test-connection'
 import { PROVIDERS, type Settings } from '@/llm/types'
 import { Check, Eye, EyeOff, Loader2, X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from './ui/Button'
 import { Input } from './ui/Input'
 
@@ -21,8 +22,15 @@ export function ApiKeyInput({ settings, onChange }: Props) {
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const abortRef = useRef<AbortController | null>(null)
   const meta = PROVIDERS[settings.providerId]
+  const access = useHostAccess(settings)
+  const host = providerHost(settings)
 
   async function runTest() {
+    // Asking first keeps the click's user gesture; resolves at once if already granted.
+    if (!(await requestHostAccess(settings))) {
+      setStatus({ kind: 'err', msg: `Access to ${host} was not granted.` })
+      return
+    }
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -36,6 +44,20 @@ export function ApiKeyInput({ settings, onChange }: Props) {
 
   return (
     <div className="space-y-2">
+      {access === false && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-accent/30 bg-accent/5 px-3 py-2 text-xs leading-snug text-ink dark:text-ink-dark">
+          <span className="min-w-0 break-words">
+            InlineAI needs your permission to contact <strong>{host}</strong>.
+          </span>
+          <Button
+            variant="secondary"
+            onClick={() => void requestHostAccess(settings)}
+            className="h-7 shrink-0 px-2 text-xs"
+          >
+            Allow access
+          </Button>
+        </div>
+      )}
       {meta.requiresKey ? (
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-muted dark:text-muted-dark">
@@ -110,4 +132,27 @@ export function ApiKeyInput({ settings, onChange }: Props) {
       </div>
     </div>
   )
+}
+
+/** Whether the extension may call the selected provider; tracks grants live. */
+function useHostAccess(settings: Settings): boolean | null {
+  const [access, setAccess] = useState<boolean | null>(null)
+  const { providerId, baseUrlOverride } = settings
+  useEffect(() => {
+    let alive = true
+    const check = (): void => {
+      hasHostAccess({ providerId, baseUrlOverride }).then((v) => {
+        if (alive) setAccess(v)
+      })
+    }
+    check()
+    chrome.permissions.onAdded.addListener(check)
+    chrome.permissions.onRemoved.addListener(check)
+    return () => {
+      alive = false
+      chrome.permissions.onAdded.removeListener(check)
+      chrome.permissions.onRemoved.removeListener(check)
+    }
+  }, [providerId, baseUrlOverride])
+  return access
 }

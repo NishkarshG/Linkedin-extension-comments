@@ -4,6 +4,51 @@ All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and the
 [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [0.2.0] - 2026-09-25
+
+Fixes from the full audit of 0.1.0.
+
+### Security
+
+- Removed a committed private signing key (`dist.pem`) and blocked `*.pem` / `*.key` in `.gitignore`. The key remains in git history and must be rotated.
+- The content script is no longer web accessible, so LinkedIn pages cannot detect the extension by probing its files.
+- Provider hosts are now optional permissions requested per provider; `activeTab`, `scripting` and the LinkedIn host permission were removed.
+- Gemini API key moved from the URL query string to the `x-goog-api-key` header.
+- Post text is escaped in the prompt and marked as untrusted to resist prompt injection.
+- The service worker only accepts generation requests from the extension itself.
+
+### Fixed
+
+- Updated retired default models (Gemini 1.5/2.0, Groq Llama 3.x, Mixtral). Saved retired models fall back to the provider default.
+- OpenAI reasoning models (GPT-5 family, o series) now use `max_completion_tokens` and no `temperature`; newer Claude models (Opus 4.7 and later, Sonnet 5) no longer receive `temperature`, which they reject.
+- Thinking models get output headroom so hidden reasoning cannot consume the whole budget.
+- Empty answers show an error instead of a silent "success"; cut off answers are flagged; provider refusals are explained.
+- Requests time out after 60 seconds; a lost worker connection resets the button.
+- Comment boxes without `role="textbox"` (LinkedIn's Quill editor) are detected; the share composer is excluded.
+- The pill now appears on company, school, group, event and search pages.
+- A user's own draft is never replaced without confirmation; the @mention in replies is kept.
+- Streaming writes are batched and never steal focus; typing or Esc cancels a running generation.
+- Post type guessing: questions are detected again, and the author headline no longer biases every post.
+- "See more" expansion and the Post button lookup work in non English LinkedIn; right to left posts are read.
+- Settings inputs no longer jump the caret or drop characters; concurrent writes can no longer overwrite each other; one invalid stored value no longer wipes the API key.
+- 403 from Ollama now explains `OLLAMA_ORIGINS`; 404 explains the model was not found.
+- Console logging only happens with Debug logging on.
+- CI lint failure fixed.
+
+### Added
+
+- Custom model id for every provider.
+- Alt+Shift+W keyboard shortcut; Esc to cancel.
+- Temperature setting; max output length field that no longer clamps while typing.
+- Anthropic prompt caching for the system prompt.
+- "What is sent" panel lists media type and replied-to comment text.
+- CI checks the content script size budget and uploads a packaged zip.
+- Tests grew from 19 to 54.
+
+### Removed
+
+- Dead `scripts/patch-loader.mjs`, stray `_tmp_*` files, a duplicate root `linkedin-skill.md`; the original build spec moved to `docs/agent-prompt.json`.
+
 ## [0.1.0] - 2026-05-26
 
 ### Added
@@ -18,4 +63,5 @@ All notable changes to this project are documented here. This project adheres to
 - Unit tests for the provider abstraction, storage round-trip, and the DOM extractor.
 - MIT license, CI workflow (lint, typecheck, build, test), and light/dark mockups.
 
-[0.1.0]: https://github.com/inlineai/inlineai/releases/tag/v0.1.0
+[0.2.0]: https://github.com/NishkarshG/Linkedin-extension-comments/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/NishkarshG/Linkedin-extension-comments/releases/tag/v0.1.0

@@ -2,11 +2,14 @@ import {
   classifyPostType,
   commentInputFrom,
   detectMediaType,
+  expandSeeMore,
   extractPost,
   findPostContainer,
   isExtractable,
+  isInScope,
+  isSeeMoreButton,
 } from '@/content/linkedin-dom'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const POST_HTML = `
   <div data-urn="urn:li:activity:7123456789">
@@ -100,5 +103,118 @@ describe('isCommentInput', () => {
     `
     const input = document.querySelector<HTMLElement>('[role="textbox"]')!
     expect(commentInputFrom(input)).toBeNull()
+  })
+})
+
+describe('classifyPostType regressions', () => {
+  it('detects a question even though the post is followed by other text', () => {
+    // Previously the author headline was appended, so "ends with ?" never matched.
+    expect(classifyPostType('Which tools do your teams actually use for this?')).toBe('question')
+  })
+
+  it('does not label a post "hiring" just because the word appears', () => {
+    expect(
+      classifyPostType(
+        'Hiring is broken because interviews test the wrong skills, and nobody wants to admit it.',
+      ),
+    ).not.toBe('hiring')
+    expect(classifyPostType('Our team is hiring for two backend roles in Berlin.')).toBe('hiring')
+  })
+})
+
+describe('isCommentInput detection', () => {
+  it('accepts a Quill editor without role="textbox"', () => {
+    document.body.innerHTML = `
+      <div data-urn="urn:li:activity:1">
+        <div class="ql-editor" contenteditable="true" aria-multiline="true"
+             data-placeholder="Add a comment…"></div>
+      </div>`
+    const input = document.querySelector<HTMLElement>('.ql-editor')!
+    expect(commentInputFrom(input)).toBe(input)
+  })
+
+  it('ignores the "Start a post" share composer', () => {
+    document.body.innerHTML = `
+      <div class="share-creation-state">
+        <div class="ql-editor" role="textbox" contenteditable="true"></div>
+      </div>`
+    const input = document.querySelector<HTMLElement>('.ql-editor')!
+    expect(commentInputFrom(input)).toBeNull()
+  })
+
+  it('ignores non editable elements', () => {
+    document.body.innerHTML = `<div role="textbox" contenteditable="false"></div>`
+    expect(commentInputFrom(document.querySelector('[role="textbox"]'))).toBeNull()
+  })
+})
+
+describe('isInScope', () => {
+  it('covers feed, profiles, company, school and group pages but never messaging', () => {
+    for (const path of [
+      '/feed/',
+      '/feed/update/urn:li:activity:1/',
+      '/in/someone/recent-activity/all/',
+      '/company/acme/posts/',
+      '/school/stanford/',
+      '/groups/123/',
+      '/search/results/content/',
+      '/posts/someone_activity-1',
+    ]) {
+      expect(isInScope(path)).toBe(true)
+    }
+    expect(isInScope('/messaging/thread/1/')).toBe(false)
+    expect(isInScope('/jobs/view/1/')).toBe(false)
+  })
+})
+
+describe('see more expansion', () => {
+  it('recognises localized and class based "see more" buttons', () => {
+    const make = (html: string) => {
+      document.body.innerHTML = html
+      return document.querySelector<HTMLElement>('button')!
+    }
+    expect(isSeeMoreButton(make('<button>…voir plus</button>'))).toBe(true)
+    expect(isSeeMoreButton(make('<button>…mehr anzeigen</button>'))).toBe(true)
+    expect(
+      isSeeMoreButton(
+        make(
+          '<button class="feed-shared-inline-show-more-text__see-more-less-toggle" aria-expanded="false">x</button>',
+        ),
+      ),
+    ).toBe(true)
+    // Same toggle after expanding ("see less"): never click it again.
+    expect(
+      isSeeMoreButton(
+        make(
+          '<button class="feed-shared-inline-show-more-text__see-more-less-toggle" aria-expanded="true">…see less</button>',
+        ),
+      ),
+    ).toBe(false)
+    expect(isSeeMoreButton(make('<button>Like</button>'))).toBe(false)
+  })
+
+  it('clicks the expander once', async () => {
+    document.body.innerHTML = `<div id="c"><button aria-expanded="false">…see more</button></div>`
+    const btn = document.querySelector('button')!
+    const click = vi.fn()
+    btn.addEventListener('click', click)
+    await expandSeeMore(document.getElementById('c')!)
+    expect(click).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('fallback extraction', () => {
+  it('reads right to left post text when class names are hashed', () => {
+    document.body.innerHTML = `
+      <div class="x1">
+        <div class="a"><a href="/in/jane"><span>Jane Doe</span></a></div>
+        <div class="b"><span dir="rtl">هذا نص منشور طويل بما يكفي ليتم التقاطه بشكل صحيح</span></div>
+        <div class="c"><div role="textbox" contenteditable="true"></div></div>
+      </div>`
+    const input = document.querySelector<HTMLElement>('[role="textbox"]')!
+    const container = findPostContainer(input)!
+    const post = extractPost(input, container)
+    expect(post.author).toBe('Jane Doe')
+    expect(post.body).toContain('هذا نص منشور')
   })
 })
