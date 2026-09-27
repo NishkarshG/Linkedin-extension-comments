@@ -21,13 +21,11 @@ All notable changes to this project are documented here. This project adheres to
 - Pressing Escape to cancel a comment no longer reaches the page (on X it used to also close the reply dialog).
 - The LinkedIn skill (0.4.0) and X skill (0.2.0) no longer carry one person's voice. Every user now gets their own voice from their persona and voice samples, with a plain, friendly default when those are empty.
 - The persona fields start open on the settings page.
+- README rewritten as a full guide: install and update steps, API keys, usage, persona and voice samples, privacy, settings reference, troubleshooting, FAQ and project structure.
 
 ### Fixed
 
 - Once the comment box holds text, the pill shrinks to an icon and moves just outside the box's right edge, so it no longer covers the first line of the comment.
-
-### Fixed
-
 - Replying to a comment now reads the original post (author, headline, body). LinkedIn renders comments as `<article>` elements, so the reply's own comment was mistaken for the post and the model only saw that comment.
 
 ## [0.2.0] - 2026-09-25
