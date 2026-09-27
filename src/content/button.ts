@@ -25,6 +25,8 @@ export class InlineButton {
   private tooltipTimer: number | null = null
   private successTimer: number | null = null
   private readonly reposition = (): void => this.position()
+  /** Once the box has text, the pill moves out of the way so it never covers it. */
+  private readonly onTargetInput = (): void => this.position()
 
   constructor() {
     this.host = document.createElement('div')
@@ -82,7 +84,9 @@ export class InlineButton {
     // Remove first so repeated focus events never stack duplicate listeners.
     window.removeEventListener('scroll', this.reposition, true)
     window.removeEventListener('resize', this.reposition)
+    this.target?.removeEventListener('input', this.onTargetInput)
     this.target = target
+    target.addEventListener('input', this.onTargetInput)
     this.setTheme(isDark)
     this.host.style.display = 'block'
     this.position()
@@ -94,6 +98,7 @@ export class InlineButton {
   hide(): void {
     this.host.style.display = 'none'
     this.pill.classList.remove('enter')
+    this.target?.removeEventListener('input', this.onTargetInput)
     this.target = null
     window.removeEventListener('scroll', this.reposition, true)
     window.removeEventListener('resize', this.reposition)
@@ -101,6 +106,7 @@ export class InlineButton {
   }
 
   destroy(): void {
+    this.target?.removeEventListener('input', this.onTargetInput)
     window.removeEventListener('scroll', this.reposition, true)
     window.removeEventListener('resize', this.reposition)
     this.clearTooltip()
@@ -138,6 +144,7 @@ export class InlineButton {
       this.iconEl.innerHTML = SPARKLE_SVG
       this.labelEl.textContent = 'Write with AI'
     }
+    this.position()
   }
 
   showError(message: string): void {
@@ -165,6 +172,7 @@ export class InlineButton {
   flashSuccess(): void {
     if (this.successTimer) clearTimeout(this.successTimer)
     this.successTimer = window.setTimeout(() => this.setState('default'), 300)
+    this.position()
   }
 
   private position(): void {
@@ -175,11 +183,21 @@ export class InlineButton {
       if (this.state !== 'loading') this.hide()
       return
     }
+    // An empty box has room for the full pill in its top right corner. Once the
+    // box holds text, the full pill would sit on top of the first line, so it
+    // shrinks to an icon and moves just outside the box's right edge.
+    const hasText = (this.target.textContent ?? '').trim().length > 0
+    this.pill.classList.toggle('compact', hasText)
     const pillRect = this.pill.getBoundingClientRect()
-    const pw = pillRect.width || 120
+    const pw = pillRect.width || (hasText ? 28 : 120)
     const ph = pillRect.height || 28
     let left = r.right - pw - 10
     let top = r.top + 6
+    if (hasText) {
+      const outside = r.right + 6
+      left = outside + pw <= window.innerWidth - 8 ? outside : r.right - pw - 4
+      top = r.top + 4
+    }
     left = Math.max(8, Math.min(left, window.innerWidth - pw - 8))
     top = Math.max(8, Math.min(top, window.innerHeight - ph - 8))
     this.host.style.left = `${left}px`

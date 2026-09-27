@@ -40,7 +40,7 @@ Every provider also accepts a **custom model id**, because providers retire mode
    ```
 2. Open `chrome://extensions`, enable **Developer mode** (top-right).
 3. Click **Load unpacked** and select the generated `dist/` folder.
-4. The settings tab opens automatically. Pick a provider, click **Allow access** so the extension may contact that provider (it asks for that one host only), paste your API key, optionally fill in your persona, and hit **Test connection**.
+4. The settings tab opens automatically. Pick a provider, click **Allow access** so the extension may contact that provider (it asks for that one host only), paste your API key, optionally fill in your persona (and paste a few of your own comments as voice samples), and hit **Test connection**.
 5. Go to your LinkedIn feed and focus any comment box, or open a post on X and focus the reply box. Click **✦ Write with AI** or press **Alt+Shift+W**.
 
 ### Using it
@@ -54,6 +54,16 @@ Every provider also accepts a **custom model id**, because providers retire mode
 ### Install (Chrome Web Store)
 
 A Web Store listing is planned. Until then, use the load-unpacked steps above.
+
+## Make it sound like you
+
+Nothing about any one person's voice is built into InlineAI. Open the settings and fill in the **Persona** (all optional):
+
+- **Name, role, expertise, industry:** decide *what* you notice. A designer notices the UI, a founder notices pricing.
+- **Voice notes:** a line about your style, like "casual, simple English, no corporate words".
+- **Voice samples:** paste 3 to 5 comments you wrote yourself, one per line. InlineAI copies *how* you write (length, tone, punctuation, emoji, language mix), never *what* you said.
+
+Leave it all empty and you get a plain, friendly default voice.
 
 ## Permissions
 

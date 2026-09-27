@@ -12,12 +12,19 @@ All notable changes to this project are documented here. This project adheres to
 - A dedicated X skill prompt (`src/skills/x-skill.md`): short, conversational replies that never exceed 280 characters.
 - A separate custom system prompt for X, and a LinkedIn / X switch for the skill viewer in the options page.
 - Quoted posts on X are passed to the model as context.
+- **Voice samples** persona field: paste 3 to 5 of your own comments and InlineAI copies how you write (length, tone, punctuation, emoji, language mix), never what you said. Samples are escaped, marked as a style reference only, and trimmed to 1,500 characters.
 
 ### Changed
 
 - The extension is now named "InlineAI for LinkedIn & X".
 - Site specific code sits behind a small adapter (`src/content/platform.ts`), one per site.
 - Pressing Escape to cancel a comment no longer reaches the page (on X it used to also close the reply dialog).
+- The LinkedIn skill (0.4.0) and X skill (0.2.0) no longer carry one person's voice. Every user now gets their own voice from their persona and voice samples, with a plain, friendly default when those are empty.
+- The persona fields start open on the settings page.
+
+### Fixed
+
+- Once the comment box holds text, the pill shrinks to an icon and moves just outside the box's right edge, so it no longer covers the first line of the comment.
 
 ### Fixed
 

@@ -72,6 +72,8 @@ export interface Persona {
   expertise: string
   industry: string
   voiceNotes: string
+  /** A few of the user's own past comments, used only as a style reference. */
+  voiceSamples: string
 }
 
 /** Stable error taxonomy surfaced to the user (mapped from provider failures). */

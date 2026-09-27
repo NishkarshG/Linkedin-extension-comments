@@ -29,3 +29,6 @@ pnpm-debug.log*
 # test / coverage
 coverage/
 .vitest/
+
+# explainer video (Remotion project, models, renders)
+video/

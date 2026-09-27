@@ -38,6 +38,7 @@ describe('storage', () => {
     expect(s.temperature).toBe(1.0)
     expect(s.streaming).toBe(true)
     expect(s.persona.role).toBe('')
+    expect(s.persona.voiceSamples).toBe('')
   })
 
   it('round-trips a settings patch', async () => {

@@ -6,6 +6,8 @@ import { Input } from './ui/Input'
 interface Props {
   persona: Persona
   onChange: (patch: Partial<Persona>) => void
+  /** Start expanded (the full settings page), collapsed in the small popup. */
+  defaultOpen?: boolean
 }
 
 const FIELDS: Array<{
@@ -13,6 +15,8 @@ const FIELDS: Array<{
   label: string
   placeholder: string
   textarea?: boolean
+  rows?: number
+  hint?: string
 }> = [
   { key: 'name', label: 'Name', placeholder: 'Optional' },
   { key: 'role', label: 'Role', placeholder: 'e.g. Product Designer' },
@@ -24,10 +28,18 @@ const FIELDS: Array<{
     placeholder: 'e.g. British, dry humour, allergic to corporate jargon',
     textarea: true,
   },
+  {
+    key: 'voiceSamples',
+    label: 'Voice samples',
+    placeholder: 'Paste 3 to 5 comments you wrote yourself, one per line',
+    textarea: true,
+    rows: 4,
+    hint: 'The AI copies how you write (length, tone, emoji), never what you said.',
+  },
 ]
 
-export function PersonaCard({ persona, onChange }: Props) {
-  const [open, setOpen] = useState(false)
+export function PersonaCard({ persona, onChange, defaultOpen = false }: Props) {
+  const [open, setOpen] = useState(defaultOpen)
   const filled = Object.values(persona).filter((v) => v.trim().length > 0).length
 
   return (
@@ -40,7 +52,7 @@ export function PersonaCard({ persona, onChange }: Props) {
         <span className="text-sm font-semibold text-ink dark:text-ink-dark">
           Persona{' '}
           <span className="font-normal text-muted dark:text-muted-dark">
-            {filled > 0 ? `· ${filled}/5 set` : '· optional'}
+            {filled > 0 ? `· ${filled}/${FIELDS.length} set` : '· optional'}
           </span>
         </span>
         <ChevronDown
@@ -66,7 +78,7 @@ export function PersonaCard({ persona, onChange }: Props) {
                     id={fieldId}
                     value={persona[f.key]}
                     placeholder={f.placeholder}
-                    rows={2}
+                    rows={f.rows ?? 2}
                     onChange={(e) => onChange({ [f.key]: e.target.value })}
                     className="w-full resize-none rounded bg-canvas dark:bg-canvas-dark text-ink dark:text-ink-dark border border-line dark:border-line-dark px-3 py-2 text-sm placeholder:text-muted dark:placeholder:text-muted-dark focus:outline-none focus:border-accent"
                   />
@@ -77,6 +89,11 @@ export function PersonaCard({ persona, onChange }: Props) {
                     placeholder={f.placeholder}
                     onChange={(e) => onChange({ [f.key]: e.target.value })}
                   />
+                )}
+                {f.hint && (
+                  <span className="mt-1 block text-xs text-muted dark:text-muted-dark">
+                    {f.hint}
+                  </span>
                 )}
               </label>
             )

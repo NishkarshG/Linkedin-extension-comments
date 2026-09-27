@@ -87,6 +87,17 @@
   white-space: nowrap;
 }
 
+/* compact: icon only, used once the comment box has text */
+.pill.compact {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.pill.compact .label {
+  display: none;
+}
+
 /* loading */
 .pill[data-state="loading"] {
   cursor: progress;

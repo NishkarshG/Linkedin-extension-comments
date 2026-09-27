@@ -18,9 +18,11 @@ export const PersonaSchema = z
     expertise: str(),
     industry: str(),
     voiceNotes: str(),
+    /** A few of the user's own past comments, pasted as a style reference. */
+    voiceSamples: str(),
   })
   .default({})
-  .catch({ name: '', role: '', expertise: '', industry: '', voiceNotes: '' })
+  .catch({ name: '', role: '', expertise: '', industry: '', voiceNotes: '', voiceSamples: '' })
 
 export type Persona = z.infer<typeof PersonaSchema>
 

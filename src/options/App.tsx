@@ -202,9 +202,10 @@ export default function App() {
 
           <Section
             title="Persona"
-            description="Optional. Shapes the angle of your comments so they sound like you."
+            description="Optional. Tell InlineAI who you are and paste a few of your own comments, so it writes like you and not like anyone else."
           >
             <PersonaCard
+              defaultOpen
               persona={settings.persona}
               onChange={(patch) => update({ persona: patch })}
             />
